@@ -1,7 +1,9 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -21,9 +25,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
@@ -54,6 +62,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -67,16 +77,19 @@ import com.example.ui.theme.LocalElimuColors
 fun LoginScreen(
   isLoggingIn: Boolean,
   loginError: String?,
-  onBackendLogin: (backendUrl: String, identifier: String, password: String) -> Unit,
-  onOfflineWorkspace: (teacherName: String, tscNumber: String, schoolName: String, backendUrl: String, grades: List<String>) -> Unit,
+  onBackendLogin: (backendUrl: String, username: String, password: String) -> Unit,
+  onOfflineWorkspace: (teacherName: String, tscNumber: String, schoolName: String, backendUrl: String, grades: List<String>, username: String) -> Unit,
 ) {
   val extra = LocalElimuColors.current
   var selectedTab by remember { mutableIntStateOf(0) }
   var backendUrl by remember { mutableStateOf(TeacherSession.DEFAULT_BACKEND_URL) }
-  var identifier by remember { mutableStateOf("") }
+  var showServerSettings by remember { mutableStateOf(false) }
+
+  var username by remember { mutableStateOf("") }
   var password by remember { mutableStateOf("") }
   var showPassword by remember { mutableStateOf(false) }
 
+  var offlineUsername by remember { mutableStateOf("alvina") }
   var teacherName by remember { mutableStateOf("Alvin Ojiambo") }
   var tscNumber by remember { mutableStateOf("TSC-482910") }
   var schoolName by remember { mutableStateOf("Fret's School") }
@@ -87,7 +100,9 @@ fun LoginScreen(
       .fillMaxSize()
       .background(MaterialTheme.colorScheme.background)
       .ruledNotebookBackground(extra.ruleLine)
-      .statusBarsPadding(),
+      .statusBarsPadding()
+      .navigationBarsPadding()
+      .imePadding(),
     contentAlignment = Alignment.Center,
   ) {
     Column(
@@ -123,8 +138,8 @@ fun LoginScreen(
               Box(modifier = Modifier.width(3.5.dp).fillMaxHeight().background(extra.penRed))
               Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                 Text("CBC School Management System", style = MaterialTheme.typography.bodySmall, color = extra.muted)
-                Text("Teacher Sign-In", style = MaterialTheme.typography.headlineMedium)
-                Text("KICD Curriculum · Schemes · Lesson Plans · PDF Reports", style = MaterialTheme.typography.bodySmall, color = extra.muted)
+                Text("Sign In", style = MaterialTheme.typography.headlineMedium)
+                Text("Enter your teacher username and password", style = MaterialTheme.typography.bodySmall, color = extra.muted)
               }
             }
           }
@@ -146,7 +161,7 @@ fun LoginScreen(
             Tab(
               selected = selectedTab == 0,
               onClick = { selectedTab = 0 },
-              text = { Text("Backend Sign-In") },
+              text = { Text("Sign In") },
               modifier = Modifier.testTag("tab_backend_signin"),
             )
             Tab(
@@ -159,26 +174,22 @@ fun LoginScreen(
 
           if (selectedTab == 0) {
             Text(
-              text = "Sign in with the account created by your School Admin. Your granted services, classes, and timetable load from the backend.",
+              text = "Sign in with the username and password issued by your school admin.",
               style = MaterialTheme.typography.bodySmall,
               color = extra.muted,
             )
 
             OutlinedTextField(
-              value = backendUrl,
-              onValueChange = { backendUrl = it },
-              label = { Text("Backend API URL") },
-              leadingIcon = { Icon(Icons.Filled.CloudSync, contentDescription = null) },
+              value = username,
+              onValueChange = { username = it },
+              label = { Text("Username") },
+              placeholder = { Text("e.g. alvina") },
+              leadingIcon = { Icon(Icons.Filled.Person, contentDescription = "Username") },
               singleLine = true,
-              modifier = Modifier.fillMaxWidth().testTag("login_backend_url_input"),
-            )
-
-            OutlinedTextField(
-              value = identifier,
-              onValueChange = { identifier = it },
-              label = { Text("Email, Username or TSC No.") },
-              leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
-              singleLine = true,
+              keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Next,
+              ),
               modifier = Modifier.fillMaxWidth().testTag("login_identifier_input"),
             )
 
@@ -186,7 +197,8 @@ fun LoginScreen(
               value = password,
               onValueChange = { password = it },
               label = { Text("Password") },
-              leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+              placeholder = { Text("Enter your password") },
+              leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = "Password") },
               trailingIcon = {
                 IconButton(onClick = { showPassword = !showPassword }) {
                   Icon(
@@ -197,6 +209,13 @@ fun LoginScreen(
               },
               visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
               singleLine = true,
+              keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+              ),
+              keyboardActions = KeyboardActions(
+                onDone = { if (!isLoggingIn) onBackendLogin(backendUrl, username, password) }
+              ),
               modifier = Modifier.fillMaxWidth().testTag("login_password_input"),
             )
 
@@ -216,7 +235,7 @@ fun LoginScreen(
             }
 
             Button(
-              onClick = { onBackendLogin(backendUrl, identifier, password) },
+              onClick = { onBackendLogin(backendUrl, username, password) },
               enabled = !isLoggingIn,
               colors = ButtonDefaults.buttonColors(containerColor = extra.highlighter, contentColor = extra.highlighterInk),
               shape = RoundedCornerShape(12.dp),
@@ -226,13 +245,57 @@ fun LoginScreen(
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), color = extra.highlighterInk, strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
               }
-              Text("Connect & Sign In", fontWeight = FontWeight.Bold)
+              Text("Sign In", fontWeight = FontWeight.Bold)
+            }
+
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { showServerSettings = !showServerSettings }
+                .padding(horizontal = 4.dp, vertical = 12.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(Icons.Filled.CloudSync, contentDescription = null, tint = extra.muted, modifier = Modifier.size(16.dp))
+                Text(
+                  text = "School server URL",
+                  style = MaterialTheme.typography.labelMedium,
+                  color = extra.muted,
+                )
+              }
+              Icon(
+                imageVector = if (showServerSettings) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = "Toggle server URL settings",
+                tint = extra.muted,
+              )
+            }
+
+            AnimatedVisibility(visible = showServerSettings) {
+              OutlinedTextField(
+                value = backendUrl,
+                onValueChange = { backendUrl = it },
+                label = { Text("Backend API URL") },
+                leadingIcon = { Icon(Icons.Filled.CloudSync, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag("login_backend_url_input"),
+              )
             }
           } else {
             Text(
-              text = "Open an offline-first teacher workspace backed by Room SQLite. You can preview Admin service allocations anytime under Me -> Preview as admin.",
+              text = "Open an offline-first teacher workspace backed by local storage. You can preview Admin service allocations anytime under Me -> Preview as admin.",
               style = MaterialTheme.typography.bodySmall,
               color = extra.muted,
+            )
+
+            OutlinedTextField(
+              value = offlineUsername,
+              onValueChange = { offlineUsername = it },
+              label = { Text("Username") },
+              leadingIcon = { Icon(Icons.Filled.Person, contentDescription = "Username") },
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth().testTag("offline_username_input"),
             )
 
             OutlinedTextField(
@@ -283,7 +346,7 @@ fun LoginScreen(
 
             Button(
               onClick = {
-                onOfflineWorkspace(teacherName, tscNumber, schoolName, backendUrl, selectedGrades.sorted())
+                onOfflineWorkspace(teacherName, tscNumber, schoolName, backendUrl, selectedGrades.sorted(), offlineUsername)
               },
               colors = ButtonDefaults.buttonColors(containerColor = extra.highlighter, contentColor = extra.highlighterInk),
               shape = RoundedCornerShape(12.dp),

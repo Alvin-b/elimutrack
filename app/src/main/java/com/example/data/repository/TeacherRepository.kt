@@ -179,6 +179,7 @@ class TeacherRepository(
     schoolName: String,
     backendUrl: String,
     allocatedGrades: List<String>,
+    username: String = "",
   ): TeacherSession {
     val defaultStreams = listOf("Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota")
     val classes = allocatedGrades.ifEmpty { listOf("Grade 4", "Grade 7", "Grade 9") }.mapIndexed { idx, grade ->
@@ -194,10 +195,14 @@ class TeacherRepository(
         learnerCount = 0,
       )
     }
+    val resolvedName = teacherName.ifBlank { "Alvin Ojiambo" }
+    val resolvedUsername = username.trim().ifBlank {
+      resolvedName.trim().lowercase().replace(" ", ".").ifBlank { "alvina" }
+    }
     val session = TeacherSession(
       teacherId = "local_${tscNumber.ifBlank { "teacher" }}",
-      fullName = teacherName.ifBlank { "Alvin Ojiambo" },
-      username = teacherName.trim().lowercase().replace(" ", ".").ifBlank { "alvina" },
+      fullName = resolvedName,
+      username = resolvedUsername,
       email = "teacher@fretsschool.ac.ke",
       tscNumber = tscNumber.ifBlank { "TSC-482910" },
       schoolName = schoolName.ifBlank { "Fret's School" },

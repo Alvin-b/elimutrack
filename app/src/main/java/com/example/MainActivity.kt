@@ -138,7 +138,9 @@ fun ElimuTrackRoot(
       isLoggingIn = state.isLoggingIn,
       loginError = state.loginError,
       onBackendLogin = viewModel::loginWithBackend,
-      onOfflineWorkspace = viewModel::enterOfflineWorkspace,
+      onOfflineWorkspace = { teacherName, tscNumber, schoolName, backendUrl, grades, username ->
+        viewModel.enterOfflineWorkspace(teacherName, tscNumber, schoolName, backendUrl, grades, username)
+      },
     )
     return
   }

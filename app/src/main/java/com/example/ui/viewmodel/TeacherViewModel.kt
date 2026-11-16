@@ -292,7 +292,7 @@ class TeacherViewModel(
 
   fun loginWithBackend(backendUrl: String, identifier: String, password: String) {
     if (identifier.isBlank() || password.isBlank()) {
-      loginErrorFlow.value = "Enter your email or TSC number and password."
+      loginErrorFlow.value = "Enter your username and password."
       return
     }
     viewModelScope.launch {
@@ -314,11 +314,12 @@ class TeacherViewModel(
     schoolName: String,
     backendUrl: String,
     allocatedGrades: List<String>,
+    username: String = "",
   ) {
     viewModelScope.launch {
       isLoggingInFlow.value = true
       loginErrorFlow.value = null
-      repository.enterOfflineWorkspace(teacherName, tscNumber, schoolName, backendUrl, allocatedGrades)
+      repository.enterOfflineWorkspace(teacherName, tscNumber, schoolName, backendUrl, allocatedGrades, username)
       isLoggingInFlow.value = false
       snackbarFlow.value = "Teacher workspace ready"
     }
