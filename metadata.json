@@ -1,0 +1,6 @@
+{
+  "name": "ElimuTrack",
+  "description": "CBC School Management System teacher app for KICD schemes of work, lesson plans, records of work, attendance, marksbook, timetables, and student progress PDF reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

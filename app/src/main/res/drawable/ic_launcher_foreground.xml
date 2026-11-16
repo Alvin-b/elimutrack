@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Academic Mortarboard Cap + Open Book Silhouette -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,28L24,41L54,54L84,41L54,28Z" />
+    <path
+        android:fillColor="#FBBF24"
+        android:pathData="M78,44L78,59C78,60.66 79.34,62 81,62C82.66,62 84,60.66 84,59L84,41L78,44Z" />
+    <path
+        android:fillColor="#E0E7FF"
+        android:pathData="M34,49.5V62.5C34,67.5 43,72 54,72C65,72 74,67.5 74,62.5V49.5L54,58.2L34,49.5Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,76H60C61.66,76 63,77.34 63,79C63,80.66 61.66,82 60,82H48C46.34,82 45,80.66 45,79C45,77.34 46.34,76 48,76Z" />
+</vector>

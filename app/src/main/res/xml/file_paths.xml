@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="pdf_exports" path="exports/" />
+    <external-files-path name="ext_documents" path="Documents/" />
+    <cache-path name="cache_exports" path="exports/" />
+</paths>
