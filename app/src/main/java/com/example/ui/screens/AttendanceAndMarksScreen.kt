@@ -29,7 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToReg
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -145,19 +145,18 @@ private fun formatReadableDate(isoDate: String): String {
 @Composable
 fun AttendanceScreen(
   state: TeacherUiState,
-  onSaveAttendance: (date: String, grade: String, stream: String, learningArea: String, lessonSlot: String, statuses: Map<String, Pair<AttendanceStatus, String>>) -> Unit,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
+  onFetchAttendanceForDay: (String) -> Unit,
+  onSaveAttendance: (date: String, grade: String, learningArea: String, lessonSlot: String, statuses: Map<String, Pair<AttendanceStatus, String>>) -> Unit,
+  onRefreshRoster: () -> Unit,
   onBackToServices: (() -> Unit)? = null,
 ) {
   val session = state.session ?: return
   val extra = LocalElimuColors.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
 
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val sortedLearners = remember(gradeLearners) {
-    gradeLearners.sortedBy { it.fullName.lowercase(Locale.getDefault()) }
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val sortedLearners = remember(classLearners) {
+    classLearners.sortedBy { it.fullName.lowercase(Locale.getDefault()) }
   }
 
   val todayIso = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) }
@@ -178,11 +177,15 @@ fun AttendanceScreen(
   var isMarkingMode by remember { mutableStateOf(false) }
   var rollCallStartIndex by remember { mutableIntStateOf(0) }
 
-  // Map attendance records for quick lookup by (learnerId, date)
-  val gradeAttendanceByKey = remember(state.attendance, state.selectedGrade) {
+  LaunchedEffect(state.selectedStream, selectedDate) {
+    if (state.selectedStream.isNotBlank()) {
+      onFetchAttendanceForDay(selectedDate)
+    }
+  }
+
+  val gradeAttendanceByKey = remember(state.attendance, state.selectedStream, state.selectedGrade) {
     val map = HashMap<Pair<String, String>, AttendanceStatus>()
-    state.attendance.filter { it.grade == state.selectedGrade }.forEach { rec ->
-      // Keep the most recent/first in list (observed DESC)
+    state.attendance.filter { state.matchesActiveClass(it.stream, it.grade) }.forEach { rec ->
       map.putIfAbsent(rec.learnerId to rec.date, rec.status)
     }
     map
@@ -191,7 +194,7 @@ fun AttendanceScreen(
   if (isMarkingMode && sortedLearners.isNotEmpty()) {
     BackHandler { isMarkingMode = false }
 
-    val statusMap = remember(state.selectedGrade, selectedDate, sortedLearners) {
+    val statusMap = remember(state.selectedStream, selectedDate, sortedLearners) {
       mutableStateMapOf<String, AttendanceStatus?>().apply {
         sortedLearners.forEach { learner ->
           put(learner.id, gradeAttendanceByKey[learner.id to selectedDate])
@@ -439,7 +442,6 @@ fun AttendanceScreen(
               onSaveAttendance(
                 selectedDate,
                 state.selectedGrade,
-                activeStream,
                 "Class Register",
                 "Daily",
                 payload,
@@ -454,7 +456,6 @@ fun AttendanceScreen(
     return
   }
 
-  // Overview Register Grid Screen (Weeks 1..12 + Date picker + Green Tick / Red X per day)
   val presentSelectedCount = sortedLearners.count {
     val st = gradeAttendanceByKey[it.id to selectedDate]
     st == AttendanceStatus.PRESENT || st == AttendanceStatus.LATE
@@ -477,7 +478,6 @@ fun AttendanceScreen(
       )
     }
 
-    // Weeks list (Week 1 to Week 12)
     item {
       Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Term weeks", style = MaterialTheme.typography.labelLarge)
@@ -507,7 +507,6 @@ fun AttendanceScreen(
       }
     }
 
-    // Weekday dates inside selected week + Pick custom calendar date
     item {
       Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -554,7 +553,6 @@ fun AttendanceScreen(
       }
     }
 
-    // Tally row for selected date
     item {
       Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         TallyBox(value = presentSelectedCount.toString(), label = "Present", valueColor = extra.ee, modifier = Modifier.weight(1f))
@@ -566,8 +564,8 @@ fun AttendanceScreen(
     if (sortedLearners.isEmpty()) {
       item {
         EmptyClassRosterCard(
-          grade = state.selectedGrade,
-          onLoadStarter = { onPopulateStarterRoster(state.selectedGrade, activeStream) },
+          classLabel = classDisplay,
+          onRefresh = onRefreshRoster,
         )
       }
     } else {
@@ -584,7 +582,6 @@ fun AttendanceScreen(
         )
       }
 
-      // Full-grade alphabetical list with Mon-Fri daily Green Tick / Red X matrix
       item {
         Surface(
           color = MaterialTheme.colorScheme.surface,
@@ -762,39 +759,43 @@ private fun TallyBox(
 @Composable
 fun MarksbookScreen(
   state: TeacherUiState,
-  onSaveMarksBatch: (grade: String, learningArea: String, term: String, assessmentType: String, scores: Map<String, Double>) -> Unit,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
+  onSaveMarksBatch: (learningAreaOrId: String, term: String, assessmentType: String, scores: Map<String, Double>) -> Unit,
+  onRefreshRoster: () -> Unit,
   onBackToServices: (() -> Unit)? = null,
 ) {
   val session = state.session ?: return
   val extra = LocalElimuColors.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
 
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val level = KicdCurriculumRepository.levelForGrade(state.selectedGrade)
-  val areas = KicdCurriculumRepository.cbcLearningAreasByLevel[level].orEmpty()
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val gradeSubjects = remember(state.selectedGrade) {
+    KicdCurriculumRepository.subjectsForGrade(state.selectedGrade)
+  }
 
-  var selectedArea by remember(state.selectedGrade) { mutableStateOf(areas.firstOrNull() ?: "Mathematics") }
+  var selectedSubjectId by remember(state.selectedGrade) {
+    mutableStateOf(gradeSubjects.firstOrNull()?.id ?: "math")
+  }
+  val selectedAreaName = remember(selectedSubjectId, gradeSubjects) {
+    gradeSubjects.firstOrNull { it.id == selectedSubjectId }?.name
+      ?: KicdCurriculumRepository.areaNameForSubjectId(selectedSubjectId)
+  }
   var selectedAssessment by remember { mutableStateOf("CAT 1") }
   val assessmentTypes = listOf("CAT 1", "Mid-Term", "End-Term", "SBA")
 
-  val scoreInputs = remember(state.selectedGrade, selectedArea, selectedAssessment, gradeLearners, state.marks.size) {
+  val scoreInputs = remember(state.selectedStream, selectedSubjectId, selectedAssessment, classLearners, state.marks) {
     mutableStateMapOf<String, String>().apply {
-      gradeLearners.forEach { l ->
-        val existing = state.marks.firstOrNull {
-          it.learnerId == l.id &&
-            it.learningArea == selectedArea &&
-            it.term == session.currentTerm &&
-            it.assessmentType == selectedAssessment
+      classLearners.forEach { l ->
+        val existing = state.marks.firstOrNull { m ->
+          m.learnerId == l.id &&
+            (KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, m.learningArea) == selectedSubjectId ||
+              m.learningArea.equals(selectedAreaName, ignoreCase = true))
         }
         put(l.id, existing?.score?.toInt()?.toString() ?: "")
       }
     }
   }
 
-  val numericScores = gradeLearners.mapNotNull { l ->
+  val numericScores = classLearners.mapNotNull { l ->
     scoreInputs[l.id]?.toDoubleOrNull()?.coerceIn(0.0, 100.0)
   }
   val eeCount = numericScores.count { CbcPerformanceLevel.fromScore(it) == CbcPerformanceLevel.EE }
@@ -811,7 +812,7 @@ fun MarksbookScreen(
     item {
       SubScreenHeader(
         title = "Marksbook",
-        subtitle = "$classDisplay · $selectedAssessment, ${session.currentTerm}",
+        subtitle = "$classDisplay · $selectedAreaName, ${session.currentTerm}",
         onBackToServices = onBackToServices,
       )
     }
@@ -819,11 +820,11 @@ fun MarksbookScreen(
     item {
       Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          areas.forEach { a ->
+          gradeSubjects.forEach { subj ->
             FilterChip(
-              selected = selectedArea == a,
-              onClick = { selectedArea = a },
-              label = { Text(a) },
+              selected = selectedSubjectId == subj.id,
+              onClick = { selectedSubjectId = subj.id },
+              label = { Text(subj.name) },
               colors = FilterChipDefaults.filterChipColors(
                 selectedContainerColor = MaterialTheme.colorScheme.onBackground,
                 selectedLabelColor = MaterialTheme.colorScheme.background,
@@ -887,11 +888,11 @@ fun MarksbookScreen(
       }
     }
 
-    if (gradeLearners.isEmpty()) {
+    if (classLearners.isEmpty()) {
       item {
         EmptyClassRosterCard(
-          grade = state.selectedGrade,
-          onLoadStarter = { onPopulateStarterRoster(state.selectedGrade, activeStream) },
+          classLabel = classDisplay,
+          onRefresh = onRefreshRoster,
         )
       }
     } else {
@@ -903,7 +904,7 @@ fun MarksbookScreen(
           modifier = Modifier.fillMaxWidth(),
         ) {
           Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-            gradeLearners.forEachIndexed { idx, learner ->
+            classLearners.forEachIndexed { idx, learner ->
               if (idx > 0) HorizontalDivider(color = extra.line)
               val rawText = scoreInputs[learner.id] ?: ""
               val parsed = rawText.toDoubleOrNull()
@@ -976,11 +977,11 @@ fun MarksbookScreen(
           text = "Save scores",
           enabled = numericScores.isNotEmpty(),
           onClick = {
-            val map = gradeLearners.mapNotNull { l ->
+            val map = classLearners.mapNotNull { l ->
               val v = scoreInputs[l.id]?.toDoubleOrNull() ?: return@mapNotNull null
               l.id to v.coerceIn(0.0, 100.0)
             }.toMap()
-            onSaveMarksBatch(state.selectedGrade, selectedArea, session.currentTerm, selectedAssessment, map)
+            onSaveMarksBatch(selectedSubjectId, session.currentTerm, selectedAssessment, map)
           },
           modifier = Modifier.fillMaxWidth().testTag("save_marks_button"),
         )
@@ -991,8 +992,8 @@ fun MarksbookScreen(
 
 @Composable
 fun EmptyClassRosterCard(
-  grade: String,
-  onLoadStarter: () -> Unit,
+  classLabel: String,
+  onRefresh: () -> Unit,
 ) {
   val extra = LocalElimuColors.current
   Surface(
@@ -1006,18 +1007,18 @@ fun EmptyClassRosterCard(
       horizontalAlignment = Alignment.CenterHorizontally,
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      Icon(Icons.Filled.GroupAdd, contentDescription = null, tint = extra.navy, modifier = Modifier.size(38.dp))
-      Text("No learners loaded for $grade", style = MaterialTheme.typography.titleMedium)
+      Icon(Icons.Filled.Groups, contentDescription = null, tint = extra.navy, modifier = Modifier.size(38.dp))
+      Text("No learners found in $classLabel", style = MaterialTheme.typography.titleMedium)
       Text(
-        text = "Sync with your ElimuTrack backend to pull class rosters, or load a starter CBC class list to work offline.",
+        text = "Pull the latest roster from your school server, or add a learner from the Learners module if permitted.",
         style = MaterialTheme.typography.bodySmall,
         color = extra.muted,
         textAlign = TextAlign.Center,
       )
       HighlighterButton(
-        text = "Load $grade starter roster",
-        onClick = onLoadStarter,
-        modifier = Modifier.fillMaxWidth().testTag("load_starter_roster_button"),
+        text = "Refresh roster",
+        onClick = onRefresh,
+        modifier = Modifier.fillMaxWidth().testTag("refresh_roster_button"),
       )
     }
   }

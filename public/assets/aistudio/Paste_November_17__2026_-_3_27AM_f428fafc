@@ -1,0 +1,1032 @@
+# ElimuTrack Teacher API
+
+Reference for the Google AI Studio teacher app. The abandoned `teacher-mobile/`
+app is not part of this integration.
+
+## 1. Connection
+
+| Environment | API base URL |
+| --- | --- |
+| Production | `https://site-4457d1964dd64e19ba7fec208a2066ee.freebuff.page` |
+| Preview | `https://site-5f778f268f6643adacf08da7104b6e48.freebuff.page` |
+
+Every endpoint below is under `/api`. All request and response bodies are JSON
+(`Content-Type: application/json`), except `/api/broadsheet/csv`, which returns a
+CSV download.
+
+Use production unless you are explicitly testing preview data.
+
+### CORS and authentication model
+
+The Worker now accepts either:
+
+1. **Bearer token (use this from AI Studio):**
+   `Authorization: Bearer <token>` on every request after login.
+2. **Same-origin cookie:** the `elmt_staff` cookie used by the web app.
+
+`POST /api/auth/login` returns the bearer token in the response body as `token`.
+Use `credentials: "omit"` for cross-origin requests. Do **not** use
+`credentials: "include"`: the API returns `Access-Control-Allow-Origin: *` for
+token clients and deliberately does not allow credentialed cross-origin reads.
+
+A token is valid for 7 days. Logging out revokes only that token. There is no
+refresh endpoint; log in again when a request returns `401 UNAUTHENTICATED`.
+
+### Minimal client setup
+
+```js
+const API = "https://site-4457d1964dd64e19ba7fec208a2066ee.freebuff.page";
+
+let token = sessionStorage.getItem("elimutrack_token") || "";
+
+async function api(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const response = await fetch(`${API}${path}`, {
+    ...options,
+    headers,
+    credentials: "omit",
+  });
+
+  if (response.status === 401) {
+    token = "";
+    sessionStorage.removeItem("elimutrack_token");
+    throw new Error("Session expired. Sign in again.");
+  }
+
+  if (!response.ok) {
+    const problem = await response.json().catch(() => ({}));
+    throw new Error(problem.error || `Request failed (${response.status})`);
+  }
+
+  return response.json();
+}
+
+async function login(username, password) {
+  const session = await api("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+  token = session.token;
+  sessionStorage.setItem("elimutrack_token", token);
+  return session;
+}
+```
+
+Tokens must be kept out of URLs, logs and committed source. `sessionStorage`
+keeps the teacher signed in for the current tab; use `localStorage` only if the
+app should survive a full browser restart.
+
+---
+
+## 2. Authentication endpoints
+
+### `POST /api/auth/login`
+
+No token required.
+
+```json
+{
+  "username": "alvina",
+  "password": "the-teacher-password"
+}
+```
+
+Success `200`:
+
+```json
+{
+  "authenticated": true,
+  "user": {
+    "sub": "staff:stf_123",
+    "name": "Alvin Ojiambo",
+    "email": "alvina"
+  },
+  "tenant": {
+    "id": "tnt_123",
+    "name": "ElimuTrack School",
+    "plan": "school",
+    "owner_sub": "..."
+  },
+  "role": "teacher",
+  "services": ["learners", "marks", "attendance", "progress"],
+  "streams": ["Grade 7 Eta"],
+  "staff": {
+    "id": "stf_123",
+    "name": "Alvin Ojiambo",
+    "username": "alvina",
+    "mustChangeLogin": false
+  },
+  "token": "elmt_..."
+}
+```
+
+The same response also sets the `elmt_staff` cookie for browser use. AI Studio
+should ignore the cookie and use `token`.
+
+Errors:
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| `400` | `VALIDATION` | Username or password missing |
+| `401` | `BAD_CREDENTIALS` | Wrong username/password, or inactive account |
+| `403` | `MUST_CHANGE_LOGIN` | Password must be changed before using the API |
+| `500` | `NO_TENANT` | Staff account is not linked to a school |
+| `500` | `LOGIN_FAILED` | Unexpected server failure |
+
+If `staff.mustChangeLogin` is `true`, call `change-login` first.
+
+### `GET /api/session`
+
+Returns the current session. Requires the bearer token. Use it on app start to
+restore the teacher, school, enabled modules and assigned classes.
+
+The shape is the same as the login response without `token`.
+
+### `POST /api/auth/change-login`
+
+Required when `staff.mustChangeLogin` is `true`, or when the teacher wants to
+change their own credentials.
+
+```json
+{
+  "username": "new.username",
+  "currentPassword": "old-password",
+  "newPassword": "new-password"
+}
+```
+
+`newPassword` must be at least 6 characters. `username` is optional; when
+present it must be 3-32 characters using letters, numbers, dot, dash or
+underscore.
+
+Success `200`:
+
+```json
+{ "ok": true, "username": "new.username" }
+```
+
+Errors: `400 VALIDATION`, `401 BAD_CREDENTIALS`, `403 FORBIDDEN` (not a teacher
+account), `409 DUPLICATE_USERNAME`.
+
+The existing token keeps working after a change.
+
+### `POST /api/auth/logout`
+
+Requires the bearer token. Revokes that token.
+
+Success `200`: `{ "ok": true }`
+
+---
+
+## 3. Common response and error rules
+
+Errors always look like:
+
+```json
+{
+  "error": "Human-readable message",
+  "code": "MACHINE_CODE"
+}
+```
+
+| Status | Code | What the app should do |
+| --- | --- | --- |
+| `400` | `VALIDATION` | Show the message next to the form |
+| `401` | `UNAUTHENTICATED` | Clear the token and open sign-in |
+| `401` | `BAD_CREDENTIALS` | Show "wrong username or password" |
+| `403` | `MUST_CHANGE_LOGIN` | Open the change-login screen |
+| `403` | `SERVICE_DENIED` | Hide/disable that module; admin has not granted it |
+| `403` | `OUT_OF_SCOPE` | Learner/class is outside the teacher's assigned streams |
+| `403` | `FORBIDDEN` | Action is not allowed for this teacher |
+| `404` | `NOT_FOUND` | Record no longer exists; refresh the list |
+| `409` | `DUPLICATE_LESSON` | Scheme row already exists for that week/lesson |
+| `409` | `DUPLICATE_ADMISSION` | Admission number already exists |
+| `429` | `RATE_LIMITED` | Back off and retry later |
+
+### Service gating
+
+`session.services` is the authoritative list of modules the admin granted. A
+teacher receives `403 SERVICE_DENIED` when calling an endpoint whose module is
+not in that list. Apply the same rule in the UI: do not show a module the
+teacher cannot use.
+
+The API maps modules to endpoints as follows:
+
+| Service | Endpoints |
+| --- | --- |
+| `learners` | `/api/learners` (also enabled if any roster service is granted) |
+| `marks` | `/api/marks` |
+| `attendance` | `/api/attendance` |
+| `observations` | `/api/observations` |
+| `fees` | `/api/payments` |
+| `whatsapp` | `/api/whatsapp` |
+| `schemes` | `/api/schemes`, `/api/schemes/bulk` |
+| `lessonplans` | `/api/lesson-plans` |
+| `recordwork` | `/api/recordwork` |
+| `progress` | `/api/progress` |
+| `timetable` | `/api/timetable` |
+| `dashboard` | `/api/dashboard` |
+| `kicd` | `/api/kicd`, `/api/resources` |
+| `broadsheet` | `/api/broadsheet/csv` |
+
+`/api/learners` is the roster used by marks, attendance, progress and reports.
+A teacher with only `marks` can still read the learner roster.
+
+### Stream scope
+
+A teacher only sees learners and records in `session.streams` (for example
+`["Grade 7 Eta"]`). Always send `stream` exactly as it appears in that array.
+`OUT_OF_SCOPE` means the selected learner or stream is not assigned to them.
+
+### Subjects
+
+Primary school:
+
+| ID | Subject |
+| --- | --- |
+| `math_p` | Mathematics |
+| `eng_p` | English |
+| `kis_p` | Kiswahili |
+| `env_p` | Environmental Activities |
+| `rel_p` | Religious Education |
+| `crt_p` | Creative Activities |
+
+JSS:
+
+| ID | Subject |
+| --- | --- |
+| `eng` | English |
+| `kis` | Kiswahili |
+| `math` | Mathematics |
+| `isci` | Integrated Science |
+| `sost` | Social Studies |
+| `agri` | Agriculture |
+| `ptech` | Pre-Technical Studies |
+| `arts` | Creative Arts |
+| `reled` | Religious Education |
+
+Use the IDs from `session`/school data where possible. The UI can display the
+friendly names above.
+
+---
+
+## 4. Endpoint summary
+
+All routes require `Authorization: Bearer <token>`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/learners` | Learner roster |
+| `POST` | `/api/learners` | Add a learner |
+| `GET` | `/api/marks?stream=&learner=` | Marks for a class or learner |
+| `PUT` | `/api/marks` | Save marks in bulk |
+| `GET` | `/api/attendance?stream=&day=` | Attendance |
+| `POST` | `/api/attendance` | Save attendance in bulk |
+| `GET` | `/api/observations?stream=&day=` | Observations |
+| `POST` | `/api/observations` | Save observations in bulk |
+| `GET` | `/api/schemes?stream=&subjectId=&term=` | Scheme of work |
+| `POST` | `/api/schemes` | Add one scheme row |
+| `POST` | `/api/schemes/bulk` | Add many scheme rows |
+| `PUT` | `/api/schemes` | Update a scheme row |
+| `DELETE` | `/api/schemes` | Delete a scheme row |
+| `GET` | `/api/lesson-plans` | Lesson-plan template and plans |
+| `POST` | `/api/lesson-plans` | Create a lesson plan |
+| `PUT` | `/api/lesson-plans` | Update a lesson plan |
+| `DELETE` | `/api/lesson-plans` | Delete a lesson plan |
+| `GET` | `/api/recordwork?stream=` | Record of work |
+| `POST` | `/api/recordwork` | Create a record-of-work entry |
+| `PUT` | `/api/recordwork` | Update a record-of-work entry |
+| `DELETE` | `/api/recordwork` | Delete a record-of-work entry |
+| `GET` | `/api/progress?stream=&learner=` | Manual progress records |
+| `POST` | `/api/progress` | Add a manual progress record |
+| `DELETE` | `/api/progress` | Delete a progress record |
+| `GET` | `/api/timetable` | Timetable |
+| `GET` | `/api/dashboard?stream=` | Dashboard totals |
+| `GET` | `/api/kicd?grade=&subject=` | Curriculum designs |
+| `GET` | `/api/resources?grade=&subject=` | Curriculum resources |
+| `GET` | `/api/payments?stream=` | Fee payments |
+| `POST` | `/api/payments` | Record a payment |
+| `GET` | `/api/whatsapp?learnerId=` | WhatsApp message log |
+| `POST` | `/api/whatsapp` | Send a WhatsApp message |
+| `GET` | `/api/broadsheet/csv?stream=` | Broadsheet CSV download |
+
+---
+
+## 5. Learners
+
+### `GET /api/learners`
+
+Optional query: `?stream=Grade%207%20Eta`.
+
+Success `200`:
+
+```json
+{
+  "learners": [
+    {
+      "id": "lrn_123",
+      "name": "Amina Wanjiku",
+      "gender": "Female",
+      "stream": "Grade 7 Eta",
+      "gradeLevel": "Grade 7",
+      "admissionNo": "ADM-001",
+      "nemisUpi": "",
+      "knecNo": "",
+      "guardianPhone": "2547...",
+      "feeTotal": 15000,
+      "feePaid": 5000,
+      "balance": 10000,
+      "attendancePct": 96,
+      "boarding": false,
+      "admissionFeePaid": false,
+      "additionalFees": 0
+    }
+  ]
+}
+```
+
+### `POST /api/learners`
+
+```json
+{
+  "name": "Amina Wanjiku",
+  "admissionNo": "ADM-001",
+  "stream": "Grade 7 Eta",
+  "gradeLevel": "Grade 7",
+  "gender": "Female",
+  "nemisUpi": "",
+  "knecNo": "",
+  "guardianPhone": "2547...",
+  "boarding": false,
+  "admissionFeePaid": false,
+  "additionalFees": 0
+}
+```
+
+`name`, `admissionNo` and `stream` are required. A teacher may only add to an
+assigned stream.
+
+Success `201`: `{ "learner": { ...learner } }`
+
+Only an administrator can update or delete learners. The teacher app should not
+offer edit/delete.
+
+---
+
+## 6. Marks
+
+### `GET /api/marks?stream=Grade%207%20Eta&learner=lrn_123`
+
+`stream` is normally required; `learner` narrows to one learner.
+
+```json
+{
+  "marks": [
+    {
+      "learnerId": "lrn_123",
+      "subjectId": "math",
+      "score": 78
+    }
+  ]
+}
+```
+
+Scores are percentages from `0` to `100`.
+
+### `PUT /api/marks`
+
+Upsert a batch. Send only the changed cells.
+
+```json
+{
+  "items": [
+    { "learnerId": "lrn_123", "subjectId": "math", "score": 78 },
+    { "learnerId": "lrn_124", "subjectId": "math", "score": 64 }
+  ]
+}
+```
+
+Success `200`: `{ "ok": true, "saved": 2 }`
+
+Validation rejects a missing learner/subject, a score outside `0-100`, and a
+learner outside the teacher's streams.
+
+---
+
+## 7. Attendance
+
+### `GET /api/attendance?stream=Grade%207%20Eta&day=2026-11-16`
+
+`day` is `YYYY-MM-DD`.
+
+```json
+{
+  "records": [
+    { "learnerId": "lrn_123", "day": "2026-11-16", "status": "present" }
+  ]
+}
+```
+
+Allowed status values: `present`, `absent`, `late`.
+
+### `POST /api/attendance`
+
+```json
+{
+  "items": [
+    { "learnerId": "lrn_123", "day": "2026-11-16", "status": "present" },
+    { "learnerId": "lrn_124", "day": "2026-11-16", "status": "absent" }
+  ]
+}
+```
+
+Success `200`: `{ "ok": true, "saved": 2 }`
+
+---
+
+## 8. Observations
+
+### `GET /api/observations?stream=Grade%207%20Eta&day=2026-11-16`
+
+```json
+{
+  "observations": [
+    {
+      "id": "obs_123",
+      "learnerId": "lrn_123",
+      "day": "2026-11-16",
+      "note": "Helped the group during the practical."
+    }
+  ]
+}
+```
+
+### `POST /api/observations`
+
+```json
+{
+  "items": [
+    {
+      "learnerId": "lrn_123",
+      "day": "2026-11-16",
+      "note": "Helped the group during the practical."
+    }
+  ]
+}
+```
+
+Success `200`: `{ "ok": true, "saved": 1 }`
+
+---
+
+## 9. Schemes of work
+
+### `GET /api/schemes?stream=Grade%207%20Eta&subjectId=math&term=Term%201`
+
+All query parameters are optional; use them to reduce the response.
+
+```json
+{
+  "rows": [
+    {
+      "id": "sch_123",
+      "stream": "Grade 7 Eta",
+      "subjectId": "math",
+      "term": "Term 1",
+      "week": 3,
+      "lesson": 2,
+      "strand": "Numbers",
+      "subStrand": "Whole numbers",
+      "outcomes": "By the end of the lesson...",
+      "experiences": "Learners to...",
+      "inquiry": "How do we...?",
+      "resources": "Counters, charts",
+      "assessment": "Oral questions",
+      "remarks": "",
+      "staffId": "stf_123",
+      "author": "Alvin Ojiambo",
+      "updatedAt": "2026-11-16T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /api/schemes`
+
+```json
+{
+  "stream": "Grade 7 Eta",
+  "subjectId": "math",
+  "term": "Term 1",
+  "week": 3,
+  "lesson": 2,
+  "strand": "Numbers",
+  "subStrand": "Whole numbers",
+  "outcomes": "By the end of the lesson...",
+  "experiences": "Learners to...",
+  "inquiry": "How do we...?",
+  "resources": "Counters, charts",
+  "assessment": "Oral questions",
+  "remarks": ""
+}
+```
+
+`stream`, `subjectId`, `term`, `week` and `lesson` identify the row;
+`subStrand` and `outcomes` are required content. A duplicate week/lesson in the
+same class/subject/term returns `409 DUPLICATE_LESSON`.
+
+Success `201`: `{ "row": { ...scheme row } }`
+
+### `POST /api/schemes/bulk`
+
+Use this for an entire term imported from a CSV or generated plan.
+
+```json
+{
+  "stream": "Grade 7 Eta",
+  "subjectId": "math",
+  "term": "Term 1",
+  "rows": [
+    {
+      "week": 1,
+      "lesson": 1,
+      "strand": "Numbers",
+      "subStrand": "Whole numbers",
+      "outcomes": "...",
+      "experiences": "...",
+      "inquiry": "...",
+      "resources": "...",
+      "assessment": "...",
+      "remarks": ""
+    }
+  ]
+}
+```
+
+Success `200`: `{ "ok": true, "saved": 12 }`
+
+### `PUT /api/schemes`
+
+Send the same fields plus the row `id`.
+
+Success `200`: `{ "ok": true }`
+
+### `DELETE /api/schemes`
+
+```json
+{ "id": "sch_123" }
+```
+
+Success `200`: `{ "ok": true }`
+
+---
+
+## 10. Lesson plans
+
+### `GET /api/lesson-plans`
+
+```json
+{
+  "template": {
+    "name": "KICD CBC Lesson Plan",
+    "sections": [
+      { "key": "sec1", "label": "Specific Learning Outcomes" },
+      { "key": "sec3", "label": "Core Competencies" }
+    ]
+  },
+  "plans": [
+    {
+      "id": "pln_123",
+      "stream": "Grade 7 Eta",
+      "subjectId": "math",
+      "lessonDate": "2026-11-16",
+      "topic": "Whole numbers",
+      "subStrand": "Place value",
+      "schemeId": "sch_123",
+      "term": "Term 1",
+      "week": 3,
+      "lesson": 2,
+      "strand": "Numbers",
+      "content": {
+        "sec1": "By the end of the lesson...",
+        "sec2": "How do we...?"
+      },
+      "updatedAt": "2026-11-16T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+The template is school-configured. Render `template.sections` in order and store
+each answer in `content[section.key]`.
+
+### `POST /api/lesson-plans`
+
+```json
+{
+  "stream": "Grade 7 Eta",
+  "subjectId": "math",
+  "lessonDate": "2026-11-16",
+  "topic": "Whole numbers",
+  "subStrand": "Place value",
+  "schemeId": "sch_123",
+  "term": "Term 1",
+  "week": 3,
+  "lesson": 2,
+  "strand": "Numbers",
+  "content": {
+    "sec1": "By the end of the lesson...",
+    "sec2": "How do we...?"
+  }
+}
+```
+
+`stream`, `subjectId`, `lessonDate` and `topic` are required. `schemeId` is
+optional but, when supplied, must belong to the same class.
+
+Success `201`: `{ "plan": { ...plan } }`
+
+### `PUT /api/lesson-plans`
+
+Same fields plus `id`.
+
+Success `200`: `{ "ok": true }`
+
+### `DELETE /api/lesson-plans`
+
+```json
+{ "id": "pln_123" }
+```
+
+Success `200`: `{ "ok": true }`
+
+---
+
+## 11. Record of work
+
+### `GET /api/recordwork?stream=Grade%207%20Eta`
+
+Returns the latest 300 entries, newest first.
+
+```json
+{
+  "rows": [
+    {
+      "id": "row_123",
+      "staffId": "stf_123",
+      "author": "Alvin Ojiambo",
+      "stream": "Grade 7 Eta",
+      "subjectId": "math",
+      "term": "Term 1",
+      "day": "2026-11-16",
+      "topic": "Whole numbers",
+      "strand": "Numbers",
+      "subStrand": "Place value",
+      "workCovered": "Pages 34-35",
+      "schemeId": "sch_123",
+      "lessonPlanId": "pln_123",
+      "week": 3,
+      "lesson": 2,
+      "classSize": 42,
+      "absences": "2",
+      "homework": "Exercise 4",
+      "remarks": "",
+      "updatedAt": "2026-11-16T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /api/recordwork`
+
+```json
+{
+  "stream": "Grade 7 Eta",
+  "subjectId": "math",
+  "day": "2026-11-16",
+  "topic": "Whole numbers",
+  "term": "Term 1",
+  "strand": "Numbers",
+  "subStrand": "Place value",
+  "workCovered": "Pages 34-35",
+  "schemeId": "sch_123",
+  "lessonPlanId": "pln_123",
+  "week": 3,
+  "lesson": 2,
+  "classSize": 42,
+  "absences": "2",
+  "homework": "Exercise 4",
+  "remarks": ""
+}
+```
+
+Required: `stream`, `subjectId`, `day`, `topic`. If `schemeId` is supplied it
+must belong to the same class.
+
+Success `201`: `{ "row": { ...record } }`
+
+### `PUT /api/recordwork`
+
+Same fields plus `id`. A teacher may edit only their own entry.
+
+Success `200`: `{ "ok": true }`
+
+### `DELETE /api/recordwork`
+
+```json
+{ "id": "row_123" }
+```
+
+Success `200`: `{ "ok": true }`
+
+---
+
+## 12. Progress
+
+**Important:** this endpoint records a teacher's manual CBC stage and note. It
+does **not** yet accept a rubric, descriptor level or numeric rubric score.
+
+### `GET /api/progress?stream=Grade%207%20Eta&learner=lrn_123`
+
+```json
+{
+  "records": [
+    {
+      "id": "prg_123",
+      "learnerId": "lrn_123",
+      "learnerName": "Amina Wanjiku",
+      "stream": "Grade 7 Eta",
+      "subjectId": "math",
+      "day": "2026-11-16",
+      "stage": "Developing",
+      "note": "Needs more practice with place value.",
+      "staffId": "stf_123",
+      "author": "Alvin Ojiambo",
+      "createdAt": "2026-11-16T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /api/progress`
+
+```json
+{
+  "learnerId": "lrn_123",
+  "day": "2026-11-16",
+  "stage": "Developing",
+  "note": "Needs more practice with place value.",
+  "subjectId": "math"
+}
+```
+
+Required: `learnerId`, `day`, `stage`. `subjectId` and `note` are optional.
+Allowed stages: `Beginning`, `Developing`, `Secure`, `Exceeding`.
+
+Success `201`: `{ "record": { ...record } }`
+
+### `DELETE /api/progress`
+
+```json
+{ "id": "prg_123" }
+```
+
+Success `200`: `{ "ok": true }`
+
+The rubric-assessment workflow (sub-strand rubric, four levels, overall score)
+is not implemented in this API yet. Do not invent a scoring formula in the AI
+Studio app. The current supported workflow is the manual stage above.
+
+---
+
+## 13. Timetable
+
+### `GET /api/timetable`
+
+```json
+{
+  "periods": [
+    { "id": "per_1", "label": "Lesson 1", "start": "08:00", "end": "08:40" }
+  ],
+  "entries": [
+    {
+      "id": "tte_123",
+      "day": "Monday",
+      "periodId": "per_1",
+      "stream": "Grade 7 Eta",
+      "subjectId": "math",
+      "teacher": "Alvin Ojiambo"
+    }
+  ]
+}
+```
+
+The teacher app is read-only for the timetable. Only an administrator edits it.
+
+---
+
+## 14. Dashboard
+
+### `GET /api/dashboard?stream=Grade%207%20Eta`
+
+```json
+{
+  "learners": 42,
+  "attendancePct": 96,
+  "classMean": 68,
+  "feesOutstanding": 120000,
+  "marksEntered": 250,
+  "lessonsPlanned": 18,
+  "observations": 7
+}
+```
+
+Use `session.streams` to populate the class picker. If `stream` is omitted the
+API uses the teacher's first assigned stream.
+
+---
+
+## 15. Curriculum designs and resources
+
+### `GET /api/kicd?grade=Grade%207&subject=math`
+
+`grade` is a display name (`Grade 1` ... `Grade 10`, plus PP1/PP2 where
+available). `subject` accepts either the app ID (`math_p`, `eng`, `isci`) or a
+name (`Mathematics`, `English`).
+
+```json
+{
+  "levels": ["PP1", "PP2", "Grade 1"],
+  "sources": [],
+  "strands": ["Numbers", "Measurement"],
+  "designs": [
+    {
+      "id": "kicd_123",
+      "level": "Grade 7",
+      "grade": "Grade 7",
+      "subjectId": "math",
+      "strand": "Numbers",
+      "subStrand": "Place value",
+      "outcomes": ["By the end of the sub-strand..."],
+      "experiences": ["Learners to..."],
+      "competencies": [],
+      "standards": [],
+      "inquiry": ["How do we...?"],
+      "resources": ["Counters"],
+      "assessment": ["Oral questions"],
+      "inclusive": "",
+      "origin": "kicd",
+      "suggestedLessons": 4
+    }
+  ]
+}
+```
+
+Use this to prefill schemes and lesson plans. The response can be large; cache
+it per grade/subject and avoid requesting it on every screen.
+
+### `GET /api/resources?grade=Grade%207&subject=math`
+
+Returns the resource library filtered the same way. Resource records contain
+`id`, `title`, `type`, `url`, `grade`, `subjectId`, `strand`, `subStrand` and
+`description`.
+
+---
+
+## 16. Payments
+
+### `GET /api/payments?stream=Grade%207%20Eta`
+
+```json
+{
+  "payments": [
+    {
+      "id": "pay_123",
+      "learnerId": "lrn_123",
+      "learnerName": "Amina Wanjiku",
+      "amount": 5000,
+      "method": "mpesa",
+      "reference": "QK123456",
+      "day": "2026-11-16",
+      "note": ""
+    }
+  ]
+}
+```
+
+### `POST /api/payments`
+
+```json
+{
+  "learnerId": "lrn_123",
+  "amount": 5000,
+  "method": "mpesa",
+  "reference": "QK123456",
+  "day": "2026-11-16",
+  "note": ""
+}
+```
+
+`learnerId`, `amount` and `method` are required. Allowed methods are `cash`,
+`mpesa`, `bank` and `cheque`.
+
+Success `201`: `{ "payment": { ...payment } }`
+
+---
+
+## 17. WhatsApp
+
+### `GET /api/whatsapp?learnerId=lrn_123`
+
+```json
+{
+  "messages": [
+    {
+      "id": "wam_123",
+      "learnerId": "lrn_123",
+      "learnerName": "Amina Wanjiku",
+      "phone": "2547...",
+      "message": "Fee balance: KES 10,000",
+      "status": "SENT",
+      "createdAt": "2026-11-16T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /api/whatsapp`
+
+```json
+{
+  "learnerId": "lrn_123",
+  "message": "Fee balance: KES 10,000"
+}
+```
+
+The learner must have a guardian phone number. Success `201`:
+
+```json
+{
+  "message": {
+    "id": "wam_123",
+    "learnerId": "lrn_123",
+    "learnerName": "Amina Wanjiku",
+    "phone": "2547...",
+    "message": "Fee balance: KES 10,000",
+    "status": "SENT",
+    "createdAt": "2026-11-16T08:00:00.000Z"
+  }
+}
+```
+
+A provider failure returns `502 WHATSAPP_FAILED`; the attempt is still logged.
+
+---
+
+## 18. Broadsheet CSV
+
+### `GET /api/broadsheet/csv?stream=Grade%207%20Eta`
+
+Returns `text/csv` with a download filename. It is not JSON.
+
+```js
+const response = await fetch(
+  `${API}/api/broadsheet/csv?stream=${encodeURIComponent(stream)}`,
+  { headers: { Authorization: `Bearer ${token}` }, credentials: "omit" }
+);
+const blob = await response.blob();
+```
+
+For an in-app table, build it from `GET /api/marks` instead.
+
+---
+
+## 19. Error and UI behaviour checklist for AI Studio
+
+1. On launch: if a stored token exists, call `GET /api/session`. On `401`,
+   clear it and show sign-in.
+2. After login: if `staff.mustChangeLogin` is true, show only the change-login
+   form until `POST /api/auth/change-login` succeeds.
+3. Show only modules listed in `session.services`.
+4. Populate class pickers from `session.streams`; never hardcode `Grade 7 Eta`.
+5. On `SERVICE_DENIED`, remove that module from the UI for the rest of the
+   session.
+6. On `OUT_OF_SCOPE`, refresh the roster and selected class.
+7. On `MUST_CHANGE_LOGIN`, return to the change-login screen.
+8. Sign out by calling `POST /api/auth/logout`, then clear local token state.
+9. Use `credentials: "omit"` and the bearer header; do not rely on the cookie.
+10. Keep the API base URL configurable, defaulting to production.
+
+## 20. What does not exist yet
+
+- Rubric-based assessment with four levels and an overall score.
+- A direct endpoint for the `curriculum-planning-database` lesson suggestions.
+- Token refresh.
+- Teacher self-registration. Accounts are created by an administrator, and the
+  teacher signs in only after that.
+- Cross-origin cookie sessions. Use the bearer token from AI Studio.

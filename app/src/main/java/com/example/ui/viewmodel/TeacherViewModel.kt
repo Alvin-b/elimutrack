@@ -5,16 +5,21 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.curriculum.KicdCurriculumRepository
+import com.example.data.remote.ApiException
 import com.example.data.repository.TeacherRepository
 import com.example.domain.model.AllocatedClass
+import com.example.domain.model.ApprovedResource
 import com.example.domain.model.AttendanceRecord
 import com.example.domain.model.AttendanceStatus
 import com.example.domain.model.CbcPerformanceLevel
+import com.example.domain.model.DashboardSummary
+import com.example.domain.model.FeePaymentRecord
 import com.example.domain.model.GuardianMessage
 import com.example.domain.model.KicdDesignItem
 import com.example.domain.model.Learner
 import com.example.domain.model.LearnerProgressEntry
 import com.example.domain.model.LessonPlan
+import com.example.domain.model.LessonPlanTemplateSection
 import com.example.domain.model.MarkEntry
 import com.example.domain.model.ObservationNote
 import com.example.domain.model.RecordOfWork
@@ -51,8 +56,14 @@ data class TeacherUiState(
   val session: TeacherSession? = null,
   val destination: AppDestination = AppDestination.HOME,
   val activeModule: TeacherModule = TeacherModule.DASHBOARD,
-  val selectedGrade: String = "Grade 4",
+  val selectedStream: String = "",
+  val selectedGrade: String = "Grade 7",
   val darkMode: Boolean = true,
+  val dashboardSummary: DashboardSummary? = null,
+  val lessonPlanTemplate: List<LessonPlanTemplateSection> = emptyList(),
+  val remoteKicdDesigns: List<KicdDesignItem> = emptyList(),
+  val remoteResources: List<ApprovedResource> = emptyList(),
+  val feePayments: List<FeePaymentRecord> = emptyList(),
   val schemes: List<SchemeOfWork> = emptyList(),
   val lessonPlans: List<LessonPlan> = emptyList(),
   val recordsOfWork: List<RecordOfWork> = emptyList(),
@@ -68,9 +79,33 @@ data class TeacherUiState(
   val loginError: String? = null,
   val snackbarMessage: String? = null,
   val exportedPdf: ExportedPdf? = null,
+  val exportedCsv: Pair<String, String>? = null,
   val pendingKicdPrefill: KicdDesignItem? = null,
   val pendingPlanPrefill: Pair<String, String>? = null,
-)
+) {
+  val activeClass: AllocatedClass?
+    get() = session?.allocatedClasses?.firstOrNull {
+      it.streamKey.equals(selectedStream, ignoreCase = true) ||
+        it.displayName.equals(selectedStream, ignoreCase = true)
+    } ?: session?.allocatedClasses?.firstOrNull()
+
+  fun matchesActiveClass(streamValue: String, gradeValue: String): Boolean {
+    val active = activeClass
+    if (active != null) {
+      if (streamValue.isNotBlank()) {
+        return streamValue.equals(active.streamKey, ignoreCase = true) ||
+          streamValue.equals(active.displayName, ignoreCase = true) ||
+          (active.stream.isNotBlank() && streamValue.equals(active.stream, ignoreCase = true) && gradeValue == active.grade)
+      }
+      return gradeValue == active.grade
+    }
+    return if (selectedStream.isNotBlank() && streamValue.isNotBlank()) {
+      streamValue.equals(selectedStream, ignoreCase = true)
+    } else {
+      gradeValue == selectedGrade
+    }
+  }
+}
 
 class TeacherViewModel(
   private val repository: TeacherRepository,
@@ -79,26 +114,49 @@ class TeacherViewModel(
 
   private val destinationFlow = MutableStateFlow(AppDestination.HOME)
   private val activeModuleFlow = MutableStateFlow(TeacherModule.DASHBOARD)
-  private val selectedGradeFlow = MutableStateFlow("Grade 4")
+  private val selectedStreamFlow = MutableStateFlow("")
   private val syncStatusFlow = MutableStateFlow(SyncStatus())
   private val isLoggingInFlow = MutableStateFlow(false)
   private val loginErrorFlow = MutableStateFlow<String?>(null)
   private val snackbarFlow = MutableStateFlow<String?>(null)
   private val exportedPdfFlow = MutableStateFlow<ExportedPdf?>(null)
+  private val exportedCsvFlow = MutableStateFlow<Pair<String, String>?>(null)
   private val pendingKicdFlow = MutableStateFlow<KicdDesignItem?>(null)
   private val pendingPlanFlow = MutableStateFlow<Pair<String, String>?>(null)
   private val sessionLoadedFlow = MutableStateFlow(false)
 
+  private val dashboardSummaryFlow = MutableStateFlow<DashboardSummary?>(null)
+  private val lessonPlanTemplateFlow = MutableStateFlow<List<LessonPlanTemplateSection>>(emptyList())
+  private val remoteKicdDesignsFlow = MutableStateFlow<List<KicdDesignItem>>(emptyList())
+  private val remoteResourcesFlow = MutableStateFlow<List<ApprovedResource>>(emptyList())
+  private val feePaymentsFlow = MutableStateFlow<List<FeePaymentRecord>>(emptyList())
+
+  private var initialRefreshDone = false
+
   init {
-    viewModelScope.launch { repository.ensureTimetableSeeded() }
+    viewModelScope.launch {
+      val verifyResult = repository.verifySessionOnLaunch()
+      sessionLoadedFlow.value = true
+      verifyResult.onSuccess { session ->
+        if (session != null) {
+          ensureValidSelectedStream(session)
+          if (!session.mustChangePassword && !initialRefreshDone) {
+            initialRefreshDone = true
+            refreshActiveStream()
+          }
+        }
+      }.onFailure { err ->
+        if (err is ApiException && (err.httpCode == 401 || err.code == "UNAUTHENTICATED")) {
+          loginErrorFlow.value = err.message
+        }
+      }
+    }
+
     viewModelScope.launch {
       repository.sessionFlow.collect { session ->
         sessionLoadedFlow.value = true
         if (session != null) {
-          val firstGrade = session.allocatedClasses.firstOrNull()?.grade
-          if (firstGrade != null && selectedGradeFlow.value !in session.allocatedClasses.map { it.grade }) {
-            selectedGradeFlow.value = firstGrade
-          }
+          ensureValidSelectedStream(session)
           if (destinationFlow.value == AppDestination.MODULE &&
             activeModuleFlow.value != TeacherModule.DASHBOARD &&
             activeModuleFlow.value !in session.allowedModules
@@ -106,8 +164,27 @@ class TeacherViewModel(
             destinationFlow.value = AppDestination.HOME
             activeModuleFlow.value = TeacherModule.DASHBOARD
           }
+        } else {
+          dashboardSummaryFlow.value = null
+          lessonPlanTemplateFlow.value = emptyList()
+          feePaymentsFlow.value = emptyList()
+          selectedStreamFlow.value = ""
+          initialRefreshDone = false
         }
       }
+    }
+  }
+
+  private fun ensureValidSelectedStream(session: TeacherSession) {
+    val classes = session.allocatedClasses
+    if (classes.isEmpty()) return
+    val current = selectedStreamFlow.value
+    val match = classes.firstOrNull {
+      it.streamKey.equals(current, ignoreCase = true) ||
+        it.displayName.equals(current, ignoreCase = true)
+    }
+    if (match == null) {
+      selectedStreamFlow.value = classes.first().streamKey
     }
   }
 
@@ -141,11 +218,11 @@ class TeacherViewModel(
   private val uiControlFlow = combine(
     destinationFlow,
     activeModuleFlow,
-    selectedGradeFlow,
+    selectedStreamFlow,
     syncStatusFlow,
     isLoggingInFlow,
-  ) { dest, module, grade, sync, loggingIn ->
-    UiControlBundle(dest, module, grade, sync, loggingIn)
+  ) { dest, module, stream, sync, loggingIn ->
+    UiControlBundle(dest, module, stream, sync, loggingIn)
   }
 
   private val extrasFlow = combine(
@@ -158,14 +235,41 @@ class TeacherViewModel(
     ExtrasBundle(loaded, loginErr, snack, pdf, lastSync)
   }
 
-  private val prefillsFlow = combine(pendingKicdFlow, pendingPlanFlow) { k, p -> k to p }
+  private val remoteExtrasFlow = combine(
+    dashboardSummaryFlow,
+    lessonPlanTemplateFlow,
+    remoteKicdDesignsFlow,
+    remoteResourcesFlow,
+    feePaymentsFlow,
+  ) { summary, template, kicd, resources, payments ->
+    RemoteExtrasBundle(summary, template, kicd, resources, payments)
+  }
+
+  private val prefillsFlow = combine(pendingKicdFlow, pendingPlanFlow, exportedCsvFlow) { k, p, csv ->
+    Triple(k, p, csv)
+  }
 
   val uiState: StateFlow<TeacherUiState> = combine(
     combine(coreDataFlow, classDataFlow, commDataFlow) { core, cls, comm -> Triple(core, cls, comm) },
-    combine(uiControlFlow, extrasFlow, prefillsFlow) { ctrl, ext, pre -> Triple(ctrl, ext, pre) },
-  ) { dataTriple, uiTriple ->
+    combine(uiControlFlow, extrasFlow, remoteExtrasFlow, prefillsFlow) { ctrl, ext, rem, pre ->
+      UiTuple(ctrl, ext, rem, pre)
+    },
+  ) { dataTriple, uiTuple ->
     val (core, cls, comm) = dataTriple
-    val (ctrl, ext, pre) = uiTriple
+    val ctrl = uiTuple.ctrl
+    val ext = uiTuple.ext
+    val rem = uiTuple.rem
+    val pre = uiTuple.pre
+
+    val session = core.session
+    val resolvedStream = session?.allocatedClasses?.firstOrNull {
+      it.streamKey.equals(ctrl.stream, ignoreCase = true) ||
+        it.displayName.equals(ctrl.stream, ignoreCase = true)
+    }?.streamKey ?: session?.allocatedClasses?.firstOrNull()?.streamKey ?: ctrl.stream
+    val resolvedGrade = session?.allocatedClasses?.firstOrNull {
+      it.streamKey.equals(resolvedStream, ignoreCase = true)
+    }?.grade ?: KicdCurriculumRepository.extractGradeFromStream(resolvedStream)
+
     val pendingUploads = core.schemes.count { !it.synced } +
       core.plans.count { !it.synced } +
       core.records.count { !it.synced } +
@@ -175,11 +279,17 @@ class TeacherViewModel(
 
     TeacherUiState(
       isSessionLoaded = ext.loaded,
-      session = core.session,
+      session = session,
       destination = ctrl.dest,
       activeModule = ctrl.module,
-      selectedGrade = ctrl.grade,
+      selectedStream = resolvedStream,
+      selectedGrade = resolvedGrade,
       darkMode = core.dark,
+      dashboardSummary = rem.summary,
+      lessonPlanTemplate = rem.template,
+      remoteKicdDesigns = rem.kicd,
+      remoteResources = rem.resources,
+      feePayments = rem.payments,
       schemes = core.schemes,
       lessonPlans = core.plans,
       recordsOfWork = core.records,
@@ -198,6 +308,7 @@ class TeacherViewModel(
       loginError = ext.loginErr,
       snackbarMessage = ext.snack,
       exportedPdf = ext.pdf,
+      exportedCsv = pre.third,
       pendingKicdPrefill = pre.first,
       pendingPlanPrefill = pre.second,
     )
@@ -225,21 +336,79 @@ class TeacherViewModel(
       openHome()
       return
     }
-    val allowed = uiState.value.session?.allowedModules ?: TeacherModule.defaultTeacherModules
+    val allowed = uiState.value.session?.allowedModules ?: emptySet()
     if (module in allowed) {
       activeModuleFlow.value = module
       destinationFlow.value = AppDestination.MODULE
+      refreshModuleExtrasIfNeeded(module)
     } else {
-      snackbarFlow.value = "${module.label} has not been enabled by Admin."
+      snackbarFlow.value = "${module.label} is not enabled for your account."
+    }
+  }
+
+  private fun refreshModuleExtrasIfNeeded(module: TeacherModule) {
+    val stream = uiState.value.selectedStream.ifBlank { return }
+    viewModelScope.launch {
+      when (module) {
+        TeacherModule.LESSON_PLANS -> {
+          repository.fetchLessonPlans(stream).onSuccess { (tpl, _) ->
+            lessonPlanTemplateFlow.value = tpl
+          }.onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.FEE_PAYMENTS -> {
+          repository.fetchPayments(stream).onSuccess {
+            feePaymentsFlow.value = it
+          }.onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.WHATSAPP -> {
+          repository.fetchWhatsApp().onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.TIMETABLE -> {
+          repository.fetchTimetable().onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.SCHEMES -> {
+          repository.fetchSchemes(stream).onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.RECORD_OF_WORK -> {
+          repository.fetchRecordWork(stream).onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.PROGRESS -> {
+          repository.fetchProgress(stream).onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.OBSERVATIONS -> {
+          repository.fetchObservations(stream).onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        else -> Unit
+      }
+    }
+  }
+
+  fun selectStream(streamKey: String) {
+    val session = uiState.value.session ?: return
+    val matched = session.allocatedClasses.firstOrNull {
+      it.streamKey.equals(streamKey, ignoreCase = true) ||
+        it.displayName.equals(streamKey, ignoreCase = true)
+    } ?: return
+    selectedStreamFlow.value = matched.streamKey
+    if (!session.mustChangePassword) {
+      refreshActiveStream()
     }
   }
 
   fun selectGrade(grade: String) {
-    selectedGradeFlow.value = grade
+    val session = uiState.value.session ?: return
+    val matched = session.allocatedClasses.firstOrNull { it.grade.equals(grade, ignoreCase = true) }
+    if (matched != null) {
+      selectStream(matched.streamKey)
+    }
   }
 
   fun clearSnackbar() {
     snackbarFlow.value = null
+  }
+
+  fun clearLoginError() {
+    loginErrorFlow.value = null
   }
 
   fun showMessage(message: String) {
@@ -248,6 +417,10 @@ class TeacherViewModel(
 
   fun dismissPdfDialog() {
     exportedPdfFlow.value = null
+  }
+
+  fun clearExportedCsv() {
+    exportedCsvFlow.value = null
   }
 
   fun clearPendingKicdPrefill() {
@@ -259,140 +432,170 @@ class TeacherViewModel(
   }
 
   fun useKicdInScheme(design: KicdDesignItem) {
-    val allowed = uiState.value.session?.allowedModules ?: TeacherModule.defaultTeacherModules
+    val allowed = uiState.value.session?.allowedModules ?: emptySet()
     if (TeacherModule.SCHEMES !in allowed) {
-      snackbarFlow.value = "Schemes of work is switched off by Admin."
+      snackbarFlow.value = "Schemes of work is not enabled for your account."
       return
     }
     pendingKicdFlow.value = design
-    selectedGradeFlow.value = design.grade
     navigateToModule(TeacherModule.SCHEMES)
   }
 
   fun useKicdInLessonPlan(design: KicdDesignItem) {
-    val allowed = uiState.value.session?.allowedModules ?: TeacherModule.defaultTeacherModules
+    val allowed = uiState.value.session?.allowedModules ?: emptySet()
     if (TeacherModule.LESSON_PLANS !in allowed) {
-      snackbarFlow.value = "Lesson plans is switched off by Admin."
+      snackbarFlow.value = "Lesson plans is not enabled for your account."
       return
     }
     pendingKicdFlow.value = design
-    selectedGradeFlow.value = design.grade
     navigateToModule(TeacherModule.LESSON_PLANS)
   }
 
   fun planFromSchemeRow(topic: String, outcomes: String) {
-    val allowed = uiState.value.session?.allowedModules ?: TeacherModule.defaultTeacherModules
+    val allowed = uiState.value.session?.allowedModules ?: emptySet()
     if (TeacherModule.LESSON_PLANS !in allowed) {
-      snackbarFlow.value = "Lesson plans is switched off by Admin."
+      snackbarFlow.value = "Lesson plans is not enabled for your account."
       return
     }
     pendingPlanFlow.value = topic to outcomes
     navigateToModule(TeacherModule.LESSON_PLANS)
   }
 
-  fun loginWithBackend(backendUrl: String, identifier: String, password: String) {
-    if (identifier.isBlank() || password.isBlank()) {
+  // --- Authentication & Session Management ---
+
+  fun loginWithBackend(backendUrl: String, username: String, password: String) {
+    if (username.isBlank() || password.isBlank()) {
       loginErrorFlow.value = "Enter your username and password."
       return
     }
     viewModelScope.launch {
       isLoggingInFlow.value = true
       loginErrorFlow.value = null
-      val result = repository.loginToBackend(backendUrl, identifier, password)
+      val result = repository.loginToBackend(backendUrl, username, password)
       isLoggingInFlow.value = false
       result.onFailure { err ->
-        loginErrorFlow.value = err.message ?: "Unable to connect to backend."
-      }.onSuccess {
-        snackbarFlow.value = "Signed in as ${it.fullName}"
+        loginErrorFlow.value = err.message ?: "Unable to connect to school server."
+      }.onSuccess { session ->
+        ensureValidSelectedStream(session)
+        snackbarFlow.value = "Signed in as ${session.fullName}"
+        if (!session.mustChangePassword) {
+          openHome()
+          initialRefreshDone = true
+          refreshActiveStream()
+        }
       }
     }
   }
 
-  fun enterOfflineWorkspace(
-    teacherName: String,
-    tscNumber: String,
-    schoolName: String,
-    backendUrl: String,
-    allocatedGrades: List<String>,
-    username: String = "",
-  ) {
+  fun changeLogin(username: String, currentPassword: String, newPassword: String) {
+    if (currentPassword.isBlank()) {
+      snackbarFlow.value = "Enter your current password."
+      return
+    }
+    if (newPassword.length < 6) {
+      snackbarFlow.value = "Use a new password of at least 6 characters."
+      return
+    }
     viewModelScope.launch {
       isLoggingInFlow.value = true
-      loginErrorFlow.value = null
-      repository.enterOfflineWorkspace(teacherName, tscNumber, schoolName, backendUrl, allocatedGrades, username)
+      val res = repository.changeLogin(username, currentPassword, newPassword)
       isLoggingInFlow.value = false
-      snackbarFlow.value = "Teacher workspace ready"
+      res.onSuccess { updated ->
+        ensureValidSelectedStream(updated)
+        openHome()
+        snackbarFlow.value = "Login updated"
+        initialRefreshDone = true
+        refreshActiveStream()
+      }.onFailure { err ->
+        handleApiFailure(err)
+      }
+    }
+  }
+
+  fun saveServerUrl(rawUrl: String) {
+    if (rawUrl.isBlank()) {
+      snackbarFlow.value = "Enter a valid server URL."
+      return
+    }
+    viewModelScope.launch {
+      repository.saveBackendUrl(rawUrl)
+      snackbarFlow.value = "Server URL updated"
+      refreshActiveStream()
     }
   }
 
   fun syncNow() {
+    refreshActiveStream(showToast = true)
+  }
+
+  fun refreshActiveStream(showToast: Boolean = false) {
+    val session = uiState.value.session ?: return
+    if (session.mustChangePassword) return
+    val stream = uiState.value.selectedStream.ifBlank {
+      session.allocatedClasses.firstOrNull()?.streamKey ?: return
+    }
     viewModelScope.launch {
       syncStatusFlow.value = syncStatusFlow.value.copy(isSyncing = true, isError = false)
-      val res = repository.syncWithBackend()
-      res.onSuccess { msg ->
-        syncStatusFlow.value = syncStatusFlow.value.copy(isSyncing = false, lastMessage = msg, isError = false)
-        snackbarFlow.value = msg
+      val res = repository.refreshAllForStream(stream)
+      res.onSuccess { summary ->
+        if (summary != null) {
+          dashboardSummaryFlow.value = summary
+        }
+        val allowed = session.allowedModules
+        if (TeacherModule.LESSON_PLANS in allowed) {
+          repository.fetchLessonPlans(stream).onSuccess { (tpl, _) ->
+            lessonPlanTemplateFlow.value = tpl
+          }
+        }
+        if (TeacherModule.FEE_PAYMENTS in allowed) {
+          repository.fetchPayments(stream).onSuccess {
+            feePaymentsFlow.value = it
+          }
+        }
+        if (TeacherModule.WHATSAPP in allowed) {
+          repository.fetchWhatsApp()
+        }
+        syncStatusFlow.value = syncStatusFlow.value.copy(
+          isSyncing = false,
+          lastMessage = "Synced $stream",
+          isError = false,
+        )
+        if (showToast) {
+          snackbarFlow.value = "Synced $stream"
+        }
       }.onFailure { err ->
-        syncStatusFlow.value = syncStatusFlow.value.copy(isSyncing = false, lastMessage = err.message, isError = true)
-        snackbarFlow.value = err.message ?: "Sync failed"
+        syncStatusFlow.value = syncStatusFlow.value.copy(
+          isSyncing = false,
+          lastMessage = err.message,
+          isError = true,
+        )
+        handleApiFailure(err)
+      }
+    }
+  }
+
+  fun fetchAttendanceForDay(day: String) {
+    val stream = uiState.value.selectedStream.ifBlank { return }
+    viewModelScope.launch {
+      repository.fetchAttendance(stream, day).onFailure {
+        handleApiFailure(it, silent = true, deniedModule = TeacherModule.ATTENDANCE)
+      }
+    }
+  }
+
+  fun loadKicdAndResources(grade: String, subjectId: String) {
+    viewModelScope.launch {
+      repository.fetchKicdAndResources(grade, subjectId).onSuccess { (designs, resources) ->
+        remoteKicdDesignsFlow.value = designs
+        remoteResourcesFlow.value = resources
+      }.onFailure {
+        handleApiFailure(it, silent = true, deniedModule = TeacherModule.KICD_DESIGNS)
       }
     }
   }
 
   fun toggleDarkMode(enabled: Boolean) {
     viewModelScope.launch { repository.setDarkMode(enabled) }
-  }
-
-  fun updateModulePermissions(modules: Set<TeacherModule>) {
-    viewModelScope.launch {
-      val keys = modules.map { it.key }
-      repository.updateModulePermissions(keys)
-      snackbarFlow.value = "Updated services (${keys.size} active)"
-    }
-  }
-
-  fun toggleAllocatedGrade(grade: String) {
-    viewModelScope.launch {
-      val session = uiState.value.session ?: return@launch
-      val existing = session.allocatedClasses
-      val hasGrade = existing.any { it.grade == grade }
-      val updated = if (hasGrade) {
-        if (existing.size <= 1) {
-          snackbarFlow.value = "A teacher needs at least one class"
-          return@launch
-        }
-        existing.filterNot { it.grade == grade }
-      } else {
-        val defaultStreams = listOf("Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota")
-        val gradeNum = grade.filter { it.isDigit() }.toIntOrNull()?.minus(1) ?: 0
-        val stream = defaultStreams.getOrElse(gradeNum) { "East" }
-        val level = KicdCurriculumRepository.levelForGrade(grade)
-        val areas = KicdCurriculumRepository.cbcLearningAreasByLevel[level].orEmpty()
-        existing + AllocatedClass("cls_${grade.lowercase().replace(" ", "_")}", grade, stream, areas)
-      }
-      repository.updateAllocatedClasses(updated)
-      if (selectedGradeFlow.value !in updated.map { it.grade }) {
-        selectedGradeFlow.value = updated.first().grade
-      }
-    }
-  }
-
-  fun updateLoginCredentials(username: String, password: String) {
-    if (password.length < 6) {
-      snackbarFlow.value = "Use a password of at least 6 characters"
-      return
-    }
-    viewModelScope.launch {
-      repository.updateLoginCredentials(username.trim().ifBlank { "alvina" }, mustChangePassword = false)
-      snackbarFlow.value = "Login updated"
-    }
-  }
-
-  fun setFirstSignInRequired(required: Boolean) {
-    viewModelScope.launch {
-      val current = uiState.value.session ?: return@launch
-      repository.updateLoginCredentials(current.username, mustChangePassword = required)
-    }
   }
 
   fun logout() {
@@ -402,7 +605,8 @@ class TeacherViewModel(
     }
   }
 
-  // CRUD
+  // --- Remote CRUD Operations ---
+
   fun saveScheme(
     existingId: String?,
     title: String,
@@ -412,72 +616,74 @@ class TeacherViewModel(
     year: Int,
     rows: List<SchemeRow>,
   ) {
-    val session = uiState.value.session ?: return
+    val stream = uiState.value.selectedStream.ifBlank { return }
+    val subjectId = KicdCurriculumRepository.subjectIdForArea(grade, learningArea)
     viewModelScope.launch {
-      val scheme = SchemeOfWork(
-        id = existingId ?: "sch_${UUID.randomUUID().toString().take(8)}",
-        title = title.ifBlank { "$grade $learningArea $term Scheme" },
-        schoolName = session.schoolName,
-        teacherName = session.fullName,
-        grade = grade,
-        learningArea = learningArea,
-        term = term,
-        year = year,
-        rows = rows,
-        updatedAt = System.currentTimeMillis(),
-        synced = false,
-      )
-      repository.saveScheme(scheme)
-      snackbarFlow.value = "Scheme of work saved"
+      repository.saveSchemesBulkRemote(stream, grade, subjectId, term, rows)
+        .onSuccess {
+          snackbarFlow.value = "Scheme of work saved"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.SCHEMES)
+        }
     }
   }
 
-  fun deleteScheme(id: String) {
+  fun deleteScheme(scheme: SchemeOfWork) {
     viewModelScope.launch {
-      repository.deleteScheme(id)
-      snackbarFlow.value = "Deleted scheme"
+      repository.deleteSchemeRemote(scheme)
+        .onSuccess {
+          snackbarFlow.value = "Deleted scheme"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.SCHEMES)
+        }
     }
   }
 
-  fun saveLessonPlan(plan: LessonPlan) {
+  fun saveLessonPlan(plan: LessonPlan, isUpdate: Boolean, contentMap: Map<String, String>) {
+    val stream = uiState.value.selectedStream.ifBlank { plan.stream }
+    val scopedPlan = plan.copy(stream = stream, updatedAt = System.currentTimeMillis())
     viewModelScope.launch {
-      repository.saveLessonPlan(plan.copy(updatedAt = System.currentTimeMillis(), synced = false))
-      snackbarFlow.value = "Lesson plan saved"
+      repository.saveLessonPlanRemote(scopedPlan, isUpdate = isUpdate, contentMap = contentMap)
+        .onSuccess {
+          snackbarFlow.value = "Lesson plan saved"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.LESSON_PLANS)
+        }
     }
   }
 
   fun deleteLessonPlan(id: String) {
     viewModelScope.launch {
-      repository.deleteLessonPlan(id)
-      snackbarFlow.value = "Deleted lesson plan"
+      repository.deleteLessonPlanRemote(id)
+        .onSuccess {
+          snackbarFlow.value = "Deleted lesson plan"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.LESSON_PLANS)
+        }
     }
   }
 
-  fun saveRecordOfWork(record: RecordOfWork) {
+  fun saveRecordOfWork(record: RecordOfWork, isUpdate: Boolean = false) {
+    val stream = uiState.value.selectedStream.ifBlank { record.stream }
+    val scopedRecord = record.copy(stream = stream, updatedAt = System.currentTimeMillis())
     viewModelScope.launch {
-      repository.saveRecordOfWork(record.copy(updatedAt = System.currentTimeMillis(), synced = false))
-      snackbarFlow.value = "Record of work saved"
+      repository.saveRecordWorkRemote(scopedRecord, isUpdate = isUpdate)
+        .onSuccess {
+          snackbarFlow.value = "Record of work saved"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.RECORD_OF_WORK)
+        }
     }
   }
 
   fun deleteRecordOfWork(id: String) {
     viewModelScope.launch {
-      repository.deleteRecordOfWork(id)
-      snackbarFlow.value = "Deleted record of work"
-    }
-  }
-
-  fun updateTimetableSlot(slot: TimetableSlot) {
-    viewModelScope.launch {
-      repository.saveTimetableSlot(slot)
-      snackbarFlow.value = "Updated ${slot.dayOfWeek} (${slot.timeRange})"
-    }
-  }
-
-  fun resetTimetableForGrade(grade: String) {
-    viewModelScope.launch {
-      repository.resetTimetableForGrade(grade)
-      snackbarFlow.value = "Restored KICD template for $grade"
+      repository.deleteRecordWorkRemote(id)
+        .onSuccess {
+          snackbarFlow.value = "Deleted record of work"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.RECORD_OF_WORK)
+        }
     }
   }
 
@@ -485,51 +691,48 @@ class TeacherViewModel(
     admissionNo: String,
     nemisUpi: String,
     fullName: String,
-    grade: String,
-    stream: String,
     gender: String,
     guardianPhone: String,
-    pathwayInterest: String,
   ) {
-    if (fullName.isBlank()) return
-    viewModelScope.launch {
-      val learner = Learner(
-        id = "lrn_${UUID.randomUUID().toString().take(8)}",
-        admissionNo = admissionNo.ifBlank { "ADM-${(4100..4999).random()}" },
-        nemisUpi = nemisUpi.ifBlank { "NEM-${(7000..7999).random()}" },
-        fullName = fullName.trim(),
-        grade = grade,
-        stream = stream.trim(),
-        gender = gender,
-        guardianPhone = guardianPhone.trim(),
-        pathwayInterest = pathwayInterest,
-      )
-      repository.saveLearner(learner)
-      snackbarFlow.value = "Added ${learner.fullName} to $grade"
+    if (fullName.isBlank() || admissionNo.isBlank()) {
+      snackbarFlow.value = "Enter the learner's full name and admission number."
+      return
     }
-  }
-
-  fun populateStarterRoster(grade: String, stream: String) {
+    val stream = uiState.value.selectedStream.ifBlank { return }
+    val grade = uiState.value.selectedGrade
     viewModelScope.launch {
-      repository.populateStarterClassRoster(grade, stream)
-      snackbarFlow.value = "Loaded $grade $stream roster"
+      repository.createLearnerRemote(
+        admissionNo = admissionNo,
+        nemisUpi = nemisUpi,
+        fullName = fullName,
+        gradeLevel = grade,
+        stream = stream,
+        gender = gender,
+        guardianPhone = guardianPhone,
+      ).onSuccess { created ->
+        snackbarFlow.value = "Added ${created.fullName} to $stream"
+      }.onFailure { err ->
+        handleApiFailure(err, deniedModule = TeacherModule.LEARNERS)
+      }
     }
   }
 
   fun saveAttendance(
     date: String,
     grade: String,
-    stream: String,
     learningArea: String,
     lessonSlot: String,
     statuses: Map<String, Pair<AttendanceStatus, String>>,
   ) {
+    val stream = uiState.value.selectedStream.ifBlank { return }
     viewModelScope.launch {
-      val learnersInGrade = uiState.value.learners.filter { it.grade == grade }
-      val records = learnersInGrade.mapNotNull { learner ->
+      val classLearners = uiState.value.learners.filter {
+        uiState.value.matchesActiveClass(it.stream, it.grade)
+      }
+      val records = classLearners.mapNotNull { learner ->
         val pair = statuses[learner.id] ?: return@mapNotNull null
         AttendanceRecord(
-          id = "${date}_${grade}_${learningArea}_${lessonSlot}_${learner.id}".replace(" ", "_"),
+          id = "${date}_${stream}_${learner.id}".replace(" ", "_"),
           date = date,
           grade = grade,
           stream = stream,
@@ -540,76 +743,71 @@ class TeacherViewModel(
           admissionNo = learner.admissionNo,
           status = pair.first,
           remarks = pair.second,
-          synced = false,
+          synced = true,
         )
       }
-      repository.saveAttendanceBatch(records)
-      snackbarFlow.value = "Register saved (${records.size} learners)"
-    }
-  }
-
-  fun saveMarkEntry(
-    learner: Learner,
-    learningArea: String,
-    term: String,
-    assessmentType: String,
-    score: Double,
-    comment: String,
-  ) {
-    viewModelScope.launch {
-      val clamped = score.coerceIn(0.0, 100.0)
-      val entry = MarkEntry(
-        id = "${learner.id}_${learningArea}_${term}_${assessmentType}".replace(" ", "_"),
-        learnerId = learner.id,
-        learnerName = learner.fullName,
-        admissionNo = learner.admissionNo,
-        grade = learner.grade,
-        stream = learner.stream,
-        learningArea = learningArea,
-        term = term,
-        assessmentType = assessmentType,
-        score = clamped,
-        maxScore = 100.0,
-        level = CbcPerformanceLevel.fromScore(clamped),
-        teacherComment = comment.trim(),
-        updatedAt = System.currentTimeMillis(),
-        synced = false,
-      )
-      repository.saveMarkEntry(entry)
+      if (records.isEmpty()) return@launch
+      repository.submitAttendanceRemote(stream, date, records)
+        .onSuccess {
+          snackbarFlow.value = "Register saved (${records.size} learners)"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.ATTENDANCE)
+        }
     }
   }
 
   fun saveMarksBatch(
-    grade: String,
-    learningArea: String,
+    learningAreaOrId: String,
     term: String,
     assessmentType: String,
     scores: Map<String, Double>,
   ) {
+    val stream = uiState.value.selectedStream.ifBlank { return }
+    val grade = uiState.value.selectedGrade
+    val subjectId = KicdCurriculumRepository.subjectIdForArea(grade, learningAreaOrId)
+    val areaName = KicdCurriculumRepository.areaNameForSubjectId(subjectId)
     viewModelScope.launch {
-      val learners = uiState.value.learners.filter { it.grade == grade }
-      val entries = learners.mapNotNull { learner ->
+      val classLearners = uiState.value.learners.filter {
+        uiState.value.matchesActiveClass(it.stream, it.grade)
+      }
+      val existingByLearner = uiState.value.marks
+        .filter { m ->
+          uiState.value.matchesActiveClass(m.stream, m.grade) &&
+            KicdCurriculumRepository.subjectIdForArea(grade, m.learningArea) == subjectId
+        }
+        .associateBy { it.learnerId }
+      val allEntries = classLearners.mapNotNull { learner ->
         val s = scores[learner.id] ?: return@mapNotNull null
         val clamped = s.coerceIn(0.0, 100.0)
         MarkEntry(
-          id = "${learner.id}_${learningArea}_${term}_${assessmentType}".replace(" ", "_"),
+          id = "${learner.id}_${subjectId}_${term}_${assessmentType}".replace(" ", "_"),
           learnerId = learner.id,
           learnerName = learner.fullName,
           admissionNo = learner.admissionNo,
-          grade = learner.grade,
-          stream = learner.stream,
-          learningArea = learningArea,
+          grade = grade,
+          stream = stream,
+          learningArea = areaName,
           term = term,
           assessmentType = assessmentType,
           score = clamped,
           maxScore = 100.0,
           level = CbcPerformanceLevel.fromScore(clamped),
           updatedAt = System.currentTimeMillis(),
-          synced = false,
+          synced = true,
         )
       }
-      repository.saveMarkEntries(entries)
-      snackbarFlow.value = "$learningArea scores saved"
+      val changedEntries = allEntries.filter { entry ->
+        val existingScore = existingByLearner[entry.learnerId]?.score
+        existingScore == null || existingScore != entry.score
+      }
+      val entriesToSend = changedEntries.ifEmpty { allEntries }
+      if (entriesToSend.isEmpty()) return@launch
+      repository.submitMarksRemote(stream, subjectId, entriesToSend)
+        .onSuccess {
+          snackbarFlow.value = "$areaName scores saved (${entriesToSend.size})"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.MARKSBOOK)
+        }
     }
   }
 
@@ -625,27 +823,27 @@ class TeacherViewModel(
       return
     }
     viewModelScope.launch {
-      val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-      repository.saveObservation(
-        ObservationNote(
-          id = "obs_${UUID.randomUUID().toString().take(8)}",
-          learnerId = learner.id,
-          learnerName = learner.fullName,
-          grade = learner.grade,
-          observationType = observationType,
-          competency = competency,
-          rating = rating,
-          note = note.trim(),
-          date = today,
-          synced = false,
-        )
+      val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+      val fullNote = "[$observationType · $competency · ${rating.code}] ${note.trim()}"
+      val local = ObservationNote(
+        id = "obs_${UUID.randomUUID().toString().take(8)}",
+        learnerId = learner.id,
+        learnerName = learner.fullName,
+        grade = learner.grade,
+        observationType = observationType,
+        competency = competency,
+        rating = rating,
+        note = note.trim(),
+        date = today,
+        synced = true,
       )
-      snackbarFlow.value = "Saved observation"
+      repository.submitObservationRemote(learner, today, fullNote, local)
+        .onSuccess {
+          snackbarFlow.value = "Saved observation"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.OBSERVATIONS)
+        }
     }
-  }
-
-  fun deleteObservation(id: String) {
-    viewModelScope.launch { repository.deleteObservation(id) }
   }
 
   fun saveProgressEntry(
@@ -654,32 +852,35 @@ class TeacherViewModel(
     stage: String,
     note: String,
   ) {
-    if (note.isBlank()) {
-      snackbarFlow.value = "Fill in progress note first"
-      return
-    }
     viewModelScope.launch {
-      val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-      repository.saveProgressEntry(
-        LearnerProgressEntry(
-          id = "prog_${UUID.randomUUID().toString().take(8)}",
-          learnerId = learner.id,
-          learnerName = learner.fullName,
-          grade = learner.grade,
-          learningArea = learningArea,
-          stage = stage,
-          note = note.trim(),
-          date = today,
-          synced = false,
-        )
-      )
-      snackbarFlow.value = "Saved progress"
+      val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+      repository.saveProgressRemote(
+        learner = learner,
+        day = today,
+        stage = stage,
+        note = note,
+        learningArea = learningArea,
+      ).onSuccess {
+        snackbarFlow.value = "Saved progress"
+      }.onFailure { err ->
+        handleApiFailure(err, deniedModule = TeacherModule.PROGRESS)
+      }
+    }
+  }
+
+  fun deleteProgressEntry(id: String) {
+    viewModelScope.launch {
+      repository.deleteProgressRemote(id)
+        .onSuccess {
+          snackbarFlow.value = "Deleted progress entry"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.PROGRESS)
+        }
     }
   }
 
   fun saveGuardianMessage(
     learner: Learner,
-    template: String,
     message: String,
   ) {
     if (message.isBlank()) {
@@ -687,36 +888,126 @@ class TeacherViewModel(
       return
     }
     viewModelScope.launch {
-      val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-      repository.saveGuardianMessage(
-        GuardianMessage(
-          id = "wa_${UUID.randomUUID().toString().take(8)}",
-          learnerId = learner.id,
-          learnerName = learner.fullName,
-          guardianPhone = learner.guardianPhone,
-          grade = learner.grade,
-          template = template,
-          message = message.trim(),
-          date = today,
-          synced = false,
-        )
-      )
-      snackbarFlow.value = "Guardian message logged"
+      repository.postWhatsAppRemote(learner, message.trim())
+        .onSuccess {
+          snackbarFlow.value = "Message sent to guardian"
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.WHATSAPP)
+        }
     }
   }
 
-  fun postFeePayment(learner: Learner, amountPaid: Double) {
+  fun postFeePayment(
+    learner: Learner,
+    amountPaid: Double,
+    method: String,
+    reference: String,
+    day: String,
+    note: String,
+  ) {
     if (amountPaid <= 0) {
       snackbarFlow.value = "Enter the amount received"
       return
     }
+    val stream = uiState.value.selectedStream
     viewModelScope.launch {
-      repository.postFeePayment(learner.id, learner.feeBalanceKes, amountPaid)
-      snackbarFlow.value = "Payment posted. Receipt ready."
+      repository.postFeePaymentRemote(
+        learner = learner,
+        amount = amountPaid,
+        method = method,
+        reference = reference,
+        day = day.ifBlank { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) },
+        note = note,
+      ).onSuccess {
+        if (stream.isNotBlank()) {
+          repository.fetchPayments(stream).onSuccess { feePaymentsFlow.value = it }
+        }
+        snackbarFlow.value = "Payment posted"
+      }.onFailure { err ->
+        handleApiFailure(err, deniedModule = TeacherModule.FEE_PAYMENTS)
+      }
     }
   }
 
-  // PDF Exports
+  fun exportBroadsheetCsv() {
+    val stream = uiState.value.selectedStream.ifBlank { return }
+    viewModelScope.launch {
+      repository.fetchBroadsheetCsv(stream)
+        .onSuccess { csv ->
+          val fileName = "Broadsheet_${stream.replace(" ", "_")}.csv"
+          exportedCsvFlow.value = fileName to csv
+        }.onFailure { err ->
+          handleApiFailure(err, deniedModule = TeacherModule.BROADSHEET)
+        }
+    }
+  }
+
+  fun saveCsvToUri(csvContent: String, targetUri: Uri) {
+    viewModelScope.launch {
+      withContext(Dispatchers.IO) { pdfExportManager.writeTextToUri(csvContent, targetUri) }
+      exportedCsvFlow.value = null
+      snackbarFlow.value = "Saved broadsheet CSV"
+    }
+  }
+
+  private fun handleApiFailure(
+    err: Throwable,
+    silent: Boolean = false,
+    deniedModule: TeacherModule? = null,
+  ) {
+    if (err is ApiException) {
+      when {
+        err.httpCode == 401 || err.code == "UNAUTHENTICATED" -> {
+          viewModelScope.launch {
+            repository.logout()
+            openHome()
+          }
+          loginErrorFlow.value = err.message
+          snackbarFlow.value = err.message
+          return
+        }
+        err.code == "MUST_CHANGE_LOGIN" -> {
+          viewModelScope.launch {
+            repository.markMustChangeLogin()
+          }
+          snackbarFlow.value = err.message
+          return
+        }
+        err.code == "OUT_OF_SCOPE" -> {
+          snackbarFlow.value = err.message
+          viewModelScope.launch {
+            repository.verifySessionOnLaunch().onSuccess { s ->
+              if (s != null) {
+                ensureValidSelectedStream(s)
+                refreshActiveStream()
+              }
+            }
+          }
+          return
+        }
+        err.code == "SERVICE_DENIED" -> {
+          snackbarFlow.value = err.message
+          viewModelScope.launch {
+            if (deniedModule != null) {
+              repository.disableServiceInSession(deniedModule)
+              if (activeModuleFlow.value == deniedModule) {
+                openHome()
+              }
+            } else {
+              repository.verifySessionOnLaunch()
+            }
+          }
+          return
+        }
+      }
+    }
+    if (!silent) {
+      snackbarFlow.value = err.message ?: "Request failed"
+    }
+  }
+
+  // --- PDF Exports ---
+
   fun exportSchemePdf(scheme: SchemeOfWork) {
     viewModelScope.launch {
       exportedPdfFlow.value = withContext(Dispatchers.IO) { pdfExportManager.exportSchemeOfWork(scheme) }
@@ -732,7 +1023,8 @@ class TeacherViewModel(
   fun exportRecordsPdf(grade: String, learningArea: String) {
     val session = uiState.value.session ?: return
     val matching = uiState.value.recordsOfWork.filter {
-      it.grade == grade && (learningArea == "All" || it.learningArea == learningArea)
+      uiState.value.matchesActiveClass(it.stream, it.grade) &&
+        (learningArea == "All" || it.learningArea == learningArea)
     }
     if (matching.isEmpty()) {
       snackbarFlow.value = "Add at least one Record of Work entry to export PDF."
@@ -826,7 +1118,7 @@ private data class ClassDataBundle(
 private data class UiControlBundle(
   val dest: AppDestination,
   val module: TeacherModule,
-  val grade: String,
+  val stream: String,
   val sync: SyncStatus,
   val loggingIn: Boolean,
 )
@@ -837,4 +1129,19 @@ private data class ExtrasBundle(
   val snack: String?,
   val pdf: ExportedPdf?,
   val lastSync: Long?,
+)
+
+private data class RemoteExtrasBundle(
+  val summary: DashboardSummary?,
+  val template: List<LessonPlanTemplateSection>,
+  val kicd: List<KicdDesignItem>,
+  val resources: List<ApprovedResource>,
+  val payments: List<FeePaymentRecord>,
+)
+
+private data class UiTuple(
+  val ctrl: UiControlBundle,
+  val ext: ExtrasBundle,
+  val rem: RemoteExtrasBundle,
+  val pre: Triple<KicdDesignItem?, Pair<String, String>?, Pair<String, String>?>,
 )

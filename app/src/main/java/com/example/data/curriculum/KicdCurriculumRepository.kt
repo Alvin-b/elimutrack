@@ -64,6 +64,79 @@ object KicdCurriculumRepository {
     ),
   )
 
+  val primarySubjects: List<com.example.domain.model.SubjectInfo> = listOf(
+    com.example.domain.model.SubjectInfo("math_p", "Mathematics"),
+    com.example.domain.model.SubjectInfo("eng_p", "English"),
+    com.example.domain.model.SubjectInfo("kis_p", "Kiswahili"),
+    com.example.domain.model.SubjectInfo("env_p", "Environmental Activities"),
+    com.example.domain.model.SubjectInfo("rel_p", "Religious Education"),
+    com.example.domain.model.SubjectInfo("crt_p", "Creative Activities"),
+  )
+
+  val jssSubjects: List<com.example.domain.model.SubjectInfo> = listOf(
+    com.example.domain.model.SubjectInfo("eng", "English"),
+    com.example.domain.model.SubjectInfo("kis", "Kiswahili"),
+    com.example.domain.model.SubjectInfo("math", "Mathematics"),
+    com.example.domain.model.SubjectInfo("isci", "Integrated Science"),
+    com.example.domain.model.SubjectInfo("sost", "Social Studies"),
+    com.example.domain.model.SubjectInfo("agri", "Agriculture"),
+    com.example.domain.model.SubjectInfo("ptech", "Pre-Technical Studies"),
+    com.example.domain.model.SubjectInfo("arts", "Creative Arts"),
+    com.example.domain.model.SubjectInfo("reled", "Religious Education"),
+  )
+
+  fun subjectsForGrade(grade: String): List<com.example.domain.model.SubjectInfo> {
+    val gNum = grade.filter { it.isDigit() }.toIntOrNull() ?: 7
+    return if (gNum in 1..6) primarySubjects else jssSubjects
+  }
+
+  fun subjectIdForArea(grade: String, areaOrId: String): String {
+    val trimmed = areaOrId.trim()
+    val all = primarySubjects + jssSubjects
+    all.firstOrNull { it.id.equals(trimmed, ignoreCase = true) }?.let { return it.id }
+
+    val gNum = grade.filter { it.isDigit() }.toIntOrNull() ?: 7
+    val lower = trimmed.lowercase()
+    return if (gNum in 1..6) {
+      when {
+        lower.contains("math") -> "math_p"
+        lower.contains("eng") || lower.contains("literacy") -> "eng_p"
+        lower.contains("kis") -> "kis_p"
+        lower.contains("env") || lower.contains("sci") || lower.contains("agri") -> "env_p"
+        lower.contains("rel") || lower.contains("cre") || lower.contains("ire") -> "rel_p"
+        lower.contains("creativ") || lower.contains("art") || lower.contains("music") -> "crt_p"
+        else -> "math_p"
+      }
+    } else {
+      when {
+        lower.contains("eng") -> "eng"
+        lower.contains("kis") -> "kis"
+        lower.contains("math") -> "math"
+        lower.contains("sci") -> "isci"
+        lower.contains("soc") -> "sost"
+        lower.contains("agri") -> "agri"
+        lower.contains("tech") -> "ptech"
+        lower.contains("art") || lower.contains("sport") || lower.contains("creativ") -> "arts"
+        lower.contains("rel") || lower.contains("cre") || lower.contains("ire") -> "reled"
+        else -> "math"
+      }
+    }
+  }
+
+  fun areaNameForSubjectId(subjectId: String): String =
+    (primarySubjects + jssSubjects).firstOrNull { it.id.equals(subjectId.trim(), ignoreCase = true) }?.name
+      ?: subjectId
+
+  fun extractGradeFromStream(streamName: String): String {
+    val ppMatch = Regex("\\b(PP\\s*[12])\\b", RegexOption.IGNORE_CASE).find(streamName)
+    if (ppMatch != null) return ppMatch.groupValues[1].uppercase().replace(" ", "")
+    val match = Regex("Grade\\s*(\\d+)", RegexOption.IGNORE_CASE).find(streamName)
+    if (match != null) return "Grade ${match.groupValues[1]}"
+    val digitMatch = Regex("\\b(10|[1-9])\\b").find(streamName)
+    if (digitMatch != null) return "Grade ${digitMatch.groupValues[1]}"
+    return cbcGrades.firstOrNull { streamName.contains(it, ignoreCase = true) } ?: "Grade 7"
+  }
+
   fun levelForGrade(grade: String): String = when (grade) {
     "Grade 1", "Grade 2", "Grade 3" -> "Lower Primary"
     "Grade 4", "Grade 5", "Grade 6" -> "Upper Primary"

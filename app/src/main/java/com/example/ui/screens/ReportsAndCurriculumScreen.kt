@@ -41,6 +41,8 @@ import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -57,10 +59,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Button
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -85,6 +86,9 @@ import com.example.ui.components.HighlighterButton
 import com.example.ui.components.SubScreenHeader
 import com.example.ui.theme.LocalElimuColors
 import com.example.ui.viewmodel.TeacherUiState
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private fun learnerInitials(name: String): String =
   name.trim().split(" ").filter { it.isNotBlank() }.mapNotNull { it.firstOrNull()?.uppercaseChar() }.take(2).joinToString("")
@@ -93,8 +97,8 @@ private fun learnerInitials(name: String): String =
 @Composable
 fun LearnersScreen(
   state: TeacherUiState,
-  onAddLearner: (adm: String, nemisUpi: String, name: String, grade: String, stream: String, gender: String, phone: String, pathway: String) -> Unit,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
+  onAddLearner: (adm: String, nemisUpi: String, name: String, gender: String, phone: String) -> Unit,
+  onRefreshRoster: () -> Unit,
   onNavigateModule: (TeacherModule) -> Unit,
   onExportLearnerPdf: (learner: Learner, comment: String) -> Unit,
   onBackToServices: () -> Unit,
@@ -102,16 +106,14 @@ fun LearnersScreen(
   val session = state.session ?: return
   val extra = LocalElimuColors.current
   val context = LocalContext.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
 
   var searchQuery by remember { mutableStateOf("") }
   var showAddDialog by remember { mutableStateOf(false) }
   var selectedLearner by remember { mutableStateOf<Learner?>(null) }
 
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val filtered = gradeLearners.filter { l ->
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val filtered = classLearners.filter { l ->
     searchQuery.isBlank() ||
       l.fullName.contains(searchQuery, ignoreCase = true) ||
       l.admissionNo.contains(searchQuery, ignoreCase = true) ||
@@ -139,7 +141,7 @@ fun LearnersScreen(
       item {
         SubScreenHeader(
           title = "Learners",
-          subtitle = "$classDisplay · ${gradeLearners.size} on roll",
+          subtitle = "$classDisplay · ${classLearners.size} on roll",
           onBackToServices = onBackToServices,
         )
         Spacer(Modifier.height(8.dp))
@@ -154,11 +156,11 @@ fun LearnersScreen(
         )
       }
 
-      if (gradeLearners.isEmpty()) {
+      if (classLearners.isEmpty()) {
         item {
           EmptyClassRosterCard(
-            grade = state.selectedGrade,
-            onLoadStarter = { onPopulateStarterRoster(state.selectedGrade, activeStream) },
+            classLabel = classDisplay,
+            onRefresh = onRefreshRoster,
           )
         }
       } else if (filtered.isEmpty()) {
@@ -250,7 +252,7 @@ fun LearnersScreen(
             Row(modifier = Modifier.fillMaxWidth()) {
               Column(modifier = Modifier.weight(1f)) {
                 Text("Admission no.", style = MaterialTheme.typography.bodySmall, color = extra.muted)
-                Text(learner.admissionNo, style = MaterialTheme.typography.titleSmall)
+                Text(learner.admissionNo.ifBlank { "-" }, style = MaterialTheme.typography.titleSmall)
               }
               Column(modifier = Modifier.weight(1f)) {
                 Text("NEMIS UPI", style = MaterialTheme.typography.bodySmall, color = extra.muted)
@@ -331,14 +333,12 @@ fun LearnersScreen(
     var adm by remember { mutableStateOf("") }
     var nemis by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
-    var stream by remember { mutableStateOf(activeStream) }
     var gender by remember { mutableStateOf("Female") }
     var phone by remember { mutableStateOf("") }
-    var pathway by remember { mutableStateOf("STEM") }
 
     AlertDialog(
       onDismissRequest = { showAddDialog = false },
-      title = { Text("Add learner to ${state.selectedGrade}") },
+      title = { Text("Add learner to $classDisplay") },
       text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
           OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Learner full name") }, modifier = Modifier.fillMaxWidth())
@@ -347,17 +347,15 @@ fun LearnersScreen(
             OutlinedTextField(value = nemis, onValueChange = { nemis = it }, label = { Text("NEMIS UPI") }, modifier = Modifier.weight(1f))
           }
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = stream, onValueChange = { stream = it }, label = { Text("Stream") }, modifier = Modifier.weight(1f))
             OutlinedTextField(value = gender, onValueChange = { gender = it }, label = { Text("Gender") }, modifier = Modifier.weight(1f))
+            OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("Guardian phone") }, modifier = Modifier.weight(1.4f))
           }
-          OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("Guardian phone") }, modifier = Modifier.fillMaxWidth())
-          OutlinedTextField(value = pathway, onValueChange = { pathway = it }, label = { Text("Pathway interest") }, modifier = Modifier.fillMaxWidth())
         }
       },
       confirmButton = {
         Button(
           onClick = {
-            onAddLearner(adm, nemis, name, state.selectedGrade, stream, gender, phone, pathway)
+            onAddLearner(adm, nemis, name, gender, phone)
             showAddDialog = false
           },
           colors = ButtonDefaults.buttonColors(containerColor = extra.highlighter, contentColor = extra.highlighterInk),
@@ -373,19 +371,16 @@ fun LearnersScreen(
 fun ObservationsScreen(
   state: TeacherUiState,
   onSaveObservation: (learner: Learner, observationType: String, competency: String, rating: CbcPerformanceLevel, note: String) -> Unit,
-  onDeleteObservation: (String) -> Unit,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
+  onRefreshRoster: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
-  val session = state.session ?: return
   val extra = LocalElimuColors.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val filtered = state.observations.filter { it.grade == state.selectedGrade }
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val learnerIds = remember(classLearners) { classLearners.map { it.id }.toSet() }
+  val filtered = state.observations.filter { it.grade == state.selectedGrade || it.learnerId in learnerIds }
 
-  var selectedLearnerId by remember(state.selectedGrade, gradeLearners) { mutableStateOf(gradeLearners.firstOrNull()?.id) }
+  var selectedLearnerId by remember(state.selectedStream, classLearners) { mutableStateOf(classLearners.firstOrNull()?.id) }
   var selectedType by remember { mutableStateOf("Strength") }
   var selectedComp by remember { mutableStateOf(KicdCurriculumRepository.cbcCoreCompetencies.first()) }
   var selectedRating by remember { mutableStateOf(CbcPerformanceLevel.ME) }
@@ -401,18 +396,18 @@ fun ObservationsScreen(
     item {
       SubScreenHeader(
         title = "Observations",
-        subtitle = "Notes on how learners are doing",
+        subtitle = "$classDisplay · Notes on how learners are doing",
         onBackToServices = onBackToServices,
       )
     }
 
-    if (gradeLearners.isEmpty()) {
+    if (classLearners.isEmpty()) {
       item {
-        EmptyClassRosterCard(state.selectedGrade) { onPopulateStarterRoster(state.selectedGrade, activeStream) }
+        EmptyClassRosterCard(classDisplay, onRefreshRoster)
       }
     } else {
       item {
-        val currentLearner = gradeLearners.firstOrNull { it.id == selectedLearnerId } ?: gradeLearners.first()
+        val currentLearner = classLearners.firstOrNull { it.id == selectedLearnerId } ?: classLearners.first()
         Surface(
           color = MaterialTheme.colorScheme.surface,
           shape = RoundedCornerShape(16.dp),
@@ -422,7 +417,7 @@ fun ObservationsScreen(
           Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Learner", style = MaterialTheme.typography.labelLarge)
             Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              gradeLearners.forEach { l ->
+              classLearners.forEach { l ->
                 FilterChip(
                   selected = currentLearner.id == l.id,
                   onClick = { selectedLearnerId = l.id },
@@ -529,14 +524,11 @@ fun ObservationsScreen(
           ) {
             Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
               Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("${obs.learnerName} · ${obs.observationType}", style = MaterialTheme.typography.titleSmall)
+                Text("${obs.learnerName.ifBlank { "Learner" }} · ${obs.observationType}", style = MaterialTheme.typography.titleSmall)
                 Text("${obs.competency} · ${obs.date}", style = MaterialTheme.typography.labelSmall, color = extra.me)
                 Text(obs.note, style = MaterialTheme.typography.bodySmall, color = extra.muted)
               }
               CbcRubricBadge(obs.rating)
-              IconButton(onClick = { onDeleteObservation(obs.id) }) {
-                Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = extra.be)
-              }
             }
           }
         }
@@ -550,21 +542,22 @@ fun ObservationsScreen(
 fun LearnerProgressScreen(
   state: TeacherUiState,
   onSaveProgress: (learner: Learner, learningArea: String, stage: String, note: String) -> Unit,
+  onDeleteProgress: (String) -> Unit,
   onExportLearnerPdf: (learner: Learner, comment: String) -> Unit,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
+  onRefreshRoster: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
-  val session = state.session ?: return
   val extra = LocalElimuColors.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val levelAreas = KicdCurriculumRepository.cbcLearningAreasByLevel[KicdCurriculumRepository.levelForGrade(state.selectedGrade)].orEmpty()
-  val savedEntries = state.progressEntries.filter { it.grade == state.selectedGrade }
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val learnerIds = remember(classLearners) { classLearners.map { it.id }.toSet() }
+  val gradeSubjects = remember(state.selectedGrade) {
+    KicdCurriculumRepository.subjectsForGrade(state.selectedGrade)
+  }
+  val savedEntries = state.progressEntries.filter { it.grade == state.selectedGrade || it.learnerId in learnerIds }
 
-  var selectedLearnerId by remember(state.selectedGrade, gradeLearners) { mutableStateOf(gradeLearners.firstOrNull()?.id) }
-  var selectedArea by remember(state.selectedGrade) { mutableStateOf(levelAreas.firstOrNull() ?: "Mathematics") }
+  var selectedLearnerId by remember(state.selectedStream, classLearners) { mutableStateOf(classLearners.firstOrNull()?.id) }
+  var selectedArea by remember(state.selectedGrade) { mutableStateOf(gradeSubjects.firstOrNull()?.name ?: "Mathematics") }
   var selectedStage by remember { mutableStateOf("Developing") }
   var note by remember { mutableStateOf("") }
   val stages = listOf("Beginning", "Developing", "Secure", "Exceeding")
@@ -577,18 +570,18 @@ fun LearnerProgressScreen(
     item {
       SubScreenHeader(
         title = "Learner progress",
-        subtitle = "Record the stage a learner has reached",
+        subtitle = "$classDisplay · Record achievement stage",
         onBackToServices = onBackToServices,
       )
     }
 
-    if (gradeLearners.isEmpty()) {
+    if (classLearners.isEmpty()) {
       item {
-        EmptyClassRosterCard(state.selectedGrade) { onPopulateStarterRoster(state.selectedGrade, activeStream) }
+        EmptyClassRosterCard(classDisplay, onRefreshRoster)
       }
     } else {
       item {
-        val currentLearner = gradeLearners.firstOrNull { it.id == selectedLearnerId } ?: gradeLearners.first()
+        val currentLearner = classLearners.firstOrNull { it.id == selectedLearnerId } ?: classLearners.first()
         Surface(
           color = MaterialTheme.colorScheme.surface,
           shape = RoundedCornerShape(16.dp),
@@ -598,7 +591,7 @@ fun LearnerProgressScreen(
           Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Learner", style = MaterialTheme.typography.labelLarge)
             Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              gradeLearners.forEach { l ->
+              classLearners.forEach { l ->
                 FilterChip(
                   selected = currentLearner.id == l.id,
                   onClick = { selectedLearnerId = l.id },
@@ -614,11 +607,11 @@ fun LearnerProgressScreen(
 
             Text("Learning area", style = MaterialTheme.typography.labelLarge)
             Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              levelAreas.forEach { a ->
+              gradeSubjects.forEach { subj ->
                 FilterChip(
-                  selected = selectedArea == a,
-                  onClick = { selectedArea = a },
-                  label = { Text(a) },
+                  selected = selectedArea == subj.name,
+                  onClick = { selectedArea = subj.name },
+                  label = { Text(subj.name) },
                   colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MaterialTheme.colorScheme.onBackground,
                     selectedLabelColor = MaterialTheme.colorScheme.background,
@@ -647,8 +640,8 @@ fun LearnerProgressScreen(
             OutlinedTextField(
               value = note,
               onValueChange = { note = it },
-              label = { Text("Note") },
-              minLines = 3,
+              label = { Text("Note (optional)") },
+              minLines = 2,
               modifier = Modifier.fillMaxWidth(),
             )
 
@@ -656,7 +649,7 @@ fun LearnerProgressScreen(
               text = "Save progress",
               onClick = {
                 onSaveProgress(currentLearner, selectedArea, selectedStage, note)
-                if (note.isNotBlank()) note = ""
+                note = ""
               },
               modifier = Modifier.fillMaxWidth(),
             )
@@ -690,15 +683,23 @@ fun LearnerProgressScreen(
         }
       } else {
         items(savedEntries, key = { it.id }) { p ->
+          val resolvedName = p.learnerName.ifBlank {
+            classLearners.firstOrNull { it.id == p.learnerId }?.fullName ?: "Learner"
+          }
           Surface(
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(16.dp),
             border = BorderStroke(1.dp, extra.line),
             modifier = Modifier.fillMaxWidth(),
           ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-              Text("${p.learnerName} · ${p.stage}", style = MaterialTheme.typography.titleSmall)
-              Text("${p.learningArea}. ${p.note}", style = MaterialTheme.typography.bodySmall, color = extra.muted)
+            Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+              Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("$resolvedName · ${p.stage}", style = MaterialTheme.typography.titleSmall)
+                Text("${p.learningArea}${if (p.note.isNotBlank()) ". ${p.note}" else ""}", style = MaterialTheme.typography.bodySmall, color = extra.muted)
+              }
+              IconButton(onClick = { onDeleteProgress(p.id) }) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete progress entry", tint = extra.be)
+              }
             }
           }
         }
@@ -713,16 +714,16 @@ fun ReportCardsScreen(
   state: TeacherUiState,
   onExportLearnerPdf: (learner: Learner, comment: String) -> Unit,
   onShowMessage: (String) -> Unit,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
+  onRefreshRoster: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
   val session = state.session ?: return
   val extra = LocalElimuColors.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val levelAreas = KicdCurriculumRepository.cbcLearningAreasByLevel[KicdCurriculumRepository.levelForGrade(state.selectedGrade)].orEmpty()
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val gradeSubjects = remember(state.selectedGrade) {
+    KicdCurriculumRepository.subjectsForGrade(state.selectedGrade)
+  }
 
   var selectedLearner by remember { mutableStateOf<Learner?>(null) }
   val savedComments = remember { mutableStateMapOf<String, String>() }
@@ -740,9 +741,9 @@ fun ReportCardsScreen(
       )
     }
 
-    if (gradeLearners.isEmpty()) {
+    if (classLearners.isEmpty()) {
       item {
-        EmptyClassRosterCard(state.selectedGrade) { onPopulateStarterRoster(state.selectedGrade, activeStream) }
+        EmptyClassRosterCard(classDisplay, onRefreshRoster)
       }
     } else {
       item {
@@ -753,7 +754,7 @@ fun ReportCardsScreen(
           modifier = Modifier.fillMaxWidth(),
         ) {
           Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-            gradeLearners.forEachIndexed { idx, l ->
+            classLearners.forEachIndexed { idx, l ->
               if (idx > 0) HorizontalDivider(color = extra.line)
               Row(
                 modifier = Modifier
@@ -813,15 +814,18 @@ fun ReportCardsScreen(
           modifier = Modifier.fillMaxWidth(),
         ) {
           Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-            levelAreas.forEachIndexed { idx, area ->
+            gradeSubjects.forEachIndexed { idx, subj ->
               if (idx > 0) HorizontalDivider(color = extra.line)
-              val mark = learnerMarks.firstOrNull { it.learningArea == area }
+              val mark = learnerMarks.firstOrNull { m ->
+                KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, m.learningArea) == subj.id ||
+                  m.learningArea.equals(subj.name, ignoreCase = true)
+              }
               Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
               ) {
-                Text(area, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                Text(subj.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 if (mark != null) {
                   Text("${mark.score.toInt()}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                   CbcRubricBadge(mark.level)
@@ -871,21 +875,19 @@ fun ReportCardsScreen(
 @Composable
 fun BroadsheetScreen(
   state: TeacherUiState,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
-  onShowMessage: (String) -> Unit,
+  onRefreshRoster: () -> Unit,
+  onExportBroadsheetCsv: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
-  val session = state.session ?: return
   val extra = LocalElimuColors.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val level = KicdCurriculumRepository.levelForGrade(state.selectedGrade)
-  val areas = KicdCurriculumRepository.cbcLearningAreasByLevel[level].orEmpty()
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val subjects = remember(state.selectedGrade) {
+    KicdCurriculumRepository.subjectsForGrade(state.selectedGrade)
+  }
   var showMatrix by remember { mutableStateOf(false) }
 
-  val ranked = gradeLearners.map { learner ->
+  val ranked = classLearners.map { learner ->
     val lMarks = state.marks.filter { it.learnerId == learner.id }
     val points = lMarks.sumOf { it.level.points }
     val mean = if (lMarks.isEmpty()) 0 else lMarks.map { it.score }.average().toInt()
@@ -910,9 +912,9 @@ fun BroadsheetScreen(
       )
     }
 
-    if (gradeLearners.isEmpty()) {
+    if (classLearners.isEmpty()) {
       item {
-        EmptyClassRosterCard(state.selectedGrade) { onPopulateStarterRoster(state.selectedGrade, activeStream) }
+        EmptyClassRosterCard(classDisplay, onRefreshRoster)
       }
     } else if (!showMatrix) {
       item {
@@ -957,13 +959,11 @@ fun BroadsheetScreen(
       }
 
       item {
-        OutlinedButton(
-          onClick = { onShowMessage("Export to CSV is a school-plan feature. Share the broadsheet from the web admin portal.") },
-          shape = RoundedCornerShape(12.dp),
-          modifier = Modifier.fillMaxWidth().height(48.dp),
-        ) {
-          Text("Export to CSV", fontWeight = FontWeight.Bold)
-        }
+        HighlighterButton(
+          text = "Export to CSV",
+          onClick = onExportBroadsheetCsv,
+          modifier = Modifier.fillMaxWidth().testTag("export_broadsheet_csv_button"),
+        )
       }
     } else {
       item {
@@ -979,8 +979,8 @@ fun BroadsheetScreen(
           ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
               Text("LEARNER", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, modifier = Modifier.width(130.dp))
-              areas.forEach { area ->
-                Text(area.take(10), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, modifier = Modifier.width(68.dp))
+              subjects.forEach { subj ->
+                Text(subj.name.take(10), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, modifier = Modifier.width(68.dp))
               }
               Text("MEAN", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, modifier = Modifier.width(56.dp))
             }
@@ -989,8 +989,11 @@ fun BroadsheetScreen(
               val lMarks = state.marks.filter { it.learnerId == learner.id }
               Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
                 Text(learner.fullName, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(130.dp))
-                areas.forEach { area ->
-                  val m = lMarks.firstOrNull { it.learningArea == area }
+                subjects.forEach { subj ->
+                  val m = lMarks.firstOrNull { mark ->
+                    KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, mark.learningArea) == subj.id ||
+                      mark.learningArea.equals(subj.name, ignoreCase = true)
+                  }
                   val txt = if (m == null) "-" else "${m.score.toInt()}(${m.level.code})"
                   Text(txt, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(68.dp))
                 }
@@ -1006,6 +1009,14 @@ fun BroadsheetScreen(
           }
         }
       }
+
+      item {
+        HighlighterButton(
+          text = "Export to CSV",
+          onClick = onExportBroadsheetCsv,
+          modifier = Modifier.fillMaxWidth().testTag("export_broadsheet_csv_button"),
+        )
+      }
     }
   }
 }
@@ -1017,7 +1028,7 @@ fun PathwaysScreen(
 ) {
   val extra = LocalElimuColors.current
   val isGrade9 = state.selectedGrade.startsWith("Grade 9")
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -1027,7 +1038,7 @@ fun PathwaysScreen(
     item {
       SubScreenHeader(
         title = "Pathways",
-        subtitle = if (isGrade9) "${state.selectedGrade} · starting points for a conversation" else "Grade 9 recommendations",
+        subtitle = if (isGrade9) "${state.activeClass?.displayName ?: state.selectedGrade} · starting points for a conversation" else "Grade 9 recommendations",
         onBackToServices = onBackToServices,
       )
     }
@@ -1048,7 +1059,7 @@ fun PathwaysScreen(
           )
         }
       }
-    } else if (gradeLearners.isNotEmpty()) {
+    } else if (classLearners.isNotEmpty()) {
       item {
         Surface(
           color = MaterialTheme.colorScheme.surface,
@@ -1057,7 +1068,7 @@ fun PathwaysScreen(
           modifier = Modifier.fillMaxWidth(),
         ) {
           Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-            gradeLearners.forEachIndexed { idx, l ->
+            classLearners.forEachIndexed { idx, l ->
               if (idx > 0) HorizontalDivider(color = extra.line)
               val lMarks = state.marks.filter { it.learnerId == l.id }
               val stemAvg = lMarks.filter { it.learningArea.contains("Math") || it.learningArea.contains("Science") || it.learningArea.contains("Agri") || it.learningArea.contains("Technical") }
@@ -1143,27 +1154,38 @@ fun PathwaysScreen(
 @Composable
 fun KicdDesignsScreen(
   state: TeacherUiState,
-  onSelectGrade: (String) -> Unit,
+  onLoadKicdDesigns: (grade: String, subjectId: String) -> Unit,
   onUseInScheme: (KicdDesignItem) -> Unit,
   onUseInLessonPlan: (KicdDesignItem) -> Unit,
   onBackToServices: () -> Unit,
 ) {
   val extra = LocalElimuColors.current
+  var browseGrade by remember(state.selectedGrade) { mutableStateOf(state.selectedGrade) }
+  val gradeSubjects = remember(browseGrade) { KicdCurriculumRepository.subjectsForGrade(browseGrade) }
+  var selectedSubjectId by remember(browseGrade) { mutableStateOf(gradeSubjects.firstOrNull()?.id ?: "math") }
   var searchQuery by remember { mutableStateOf("") }
   var expandedId by remember { mutableStateOf<String?>(null) }
 
-  val designs = KicdCurriculumRepository.kicdDesigns.filter { item ->
-    val matchesGrade = searchQuery.isNotBlank() || item.grade == state.selectedGrade
-    val matchesSearch = searchQuery.isBlank() ||
-      item.learningArea.contains(searchQuery, ignoreCase = true) ||
-      item.strand.contains(searchQuery, ignoreCase = true) ||
-      item.subStrand.contains(searchQuery, ignoreCase = true) ||
-      item.grade.contains(searchQuery, ignoreCase = true)
-    matchesGrade && matchesSearch
-  }.ifEmpty {
-    KicdCurriculumRepository.kicdDesigns.filter {
-      searchQuery.isBlank() || it.learningArea.contains(searchQuery, ignoreCase = true) || it.subStrand.contains(searchQuery, ignoreCase = true)
+  LaunchedEffect(browseGrade, selectedSubjectId) {
+    onLoadKicdDesigns(browseGrade, selectedSubjectId)
+  }
+
+  val combinedDesigns = remember(state.remoteKicdDesigns, browseGrade, selectedSubjectId, searchQuery) {
+    val all = (state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns).distinctBy { it.id }
+    val filtered = all.filter { item ->
+      val matchesGrade = searchQuery.isNotBlank() || item.grade.equals(browseGrade, ignoreCase = true)
+      val matchesSearch = searchQuery.isBlank() ||
+        item.learningArea.contains(searchQuery, ignoreCase = true) ||
+        item.strand.contains(searchQuery, ignoreCase = true) ||
+        item.subStrand.contains(searchQuery, ignoreCase = true) ||
+        item.grade.contains(searchQuery, ignoreCase = true)
+      matchesGrade && matchesSearch
     }
+    filtered.ifEmpty { all.take(5) }
+  }
+
+  val combinedResources = remember(state.remoteResources, browseGrade) {
+    (state.remoteResources + KicdCurriculumRepository.approvedResources).distinctBy { it.id }
   }
 
   LazyColumn(
@@ -1174,7 +1196,7 @@ fun KicdDesignsScreen(
     item {
       SubScreenHeader(
         title = "KICD designs",
-        subtitle = "${state.selectedGrade} · Curriculum design library",
+        subtitle = "$browseGrade · Curriculum design library",
         onBackToServices = onBackToServices,
       )
       Spacer(Modifier.height(8.dp))
@@ -1188,11 +1210,26 @@ fun KicdDesignsScreen(
         modifier = Modifier.fillMaxWidth().testTag("kicd_search_input"),
       )
       Spacer(Modifier.height(8.dp))
-      GradeSelectorRow(KicdCurriculumRepository.cbcGrades, state.selectedGrade, onSelectGrade)
+      GradeSelectorRow(KicdCurriculumRepository.cbcGrades, browseGrade, onSelectGrade = { browseGrade = it })
+      Spacer(Modifier.height(8.dp))
+      Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        gradeSubjects.forEach { subj ->
+          FilterChip(
+            selected = selectedSubjectId == subj.id,
+            onClick = { selectedSubjectId = subj.id },
+            label = { Text(subj.name) },
+            colors = FilterChipDefaults.filterChipColors(
+              selectedContainerColor = MaterialTheme.colorScheme.onBackground,
+              selectedLabelColor = MaterialTheme.colorScheme.background,
+            ),
+            shape = RoundedCornerShape(99.dp),
+          )
+        }
+      }
     }
 
-    items(designs, key = { it.id }) { design ->
-      val expanded = expandedId == design.id || designs.size <= 2
+    items(combinedDesigns, key = { it.id }) { design ->
+      val expanded = expandedId == design.id || combinedDesigns.size <= 2
       Surface(
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(16.dp),
@@ -1225,18 +1262,26 @@ fun KicdDesignsScreen(
 
           if (expanded) {
             HorizontalDivider(color = extra.line)
-            Text("Outcomes.", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-            design.specificLearningOutcomes.forEach { outcome ->
-              Text("• $outcome", style = MaterialTheme.typography.bodySmall, color = extra.muted)
+            if (design.specificLearningOutcomes.isNotEmpty()) {
+              Text("Outcomes.", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+              design.specificLearningOutcomes.forEach { outcome ->
+                Text("• $outcome", style = MaterialTheme.typography.bodySmall, color = extra.muted)
+              }
             }
-            Text("Experiences.", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-            Text(design.learningExperiences.joinToString(" "), style = MaterialTheme.typography.bodySmall, color = extra.muted)
-            Text("Key inquiry question.", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-            Text(design.keyInquiryQuestions.joinToString(" | "), style = MaterialTheme.typography.bodySmall, color = extra.muted)
+            if (design.learningExperiences.isNotEmpty()) {
+              Text("Experiences.", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+              Text(design.learningExperiences.joinToString(" "), style = MaterialTheme.typography.bodySmall, color = extra.muted)
+            }
+            if (design.keyInquiryQuestions.isNotEmpty()) {
+              Text("Key inquiry question.", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+              Text(design.keyInquiryQuestions.joinToString(" | "), style = MaterialTheme.typography.bodySmall, color = extra.muted)
+            }
 
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-              design.coreCompetencies.forEach { comp ->
-                AssistChip(onClick = {}, label = { Text(comp, style = MaterialTheme.typography.labelSmall) })
+            if (design.coreCompetencies.isNotEmpty()) {
+              FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                design.coreCompetencies.forEach { comp ->
+                  AssistChip(onClick = {}, label = { Text(comp, style = MaterialTheme.typography.labelSmall) })
+                }
               }
             }
 
@@ -1263,7 +1308,7 @@ fun KicdDesignsScreen(
       Text("Approved KICD Textbooks & Guides", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 6.dp))
     }
 
-    items(KicdCurriculumRepository.approvedResources, key = { it.id }) { res ->
+    items(combinedResources, key = { it.id }) { res ->
       Surface(
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(14.dp),
@@ -1276,7 +1321,9 @@ fun KicdDesignsScreen(
           Column(modifier = Modifier.weight(1f)) {
             Text(res.title, style = MaterialTheme.typography.titleSmall)
             Text("${res.publisher} · ${res.grade} · ${res.learningArea}", style = MaterialTheme.typography.bodySmall, color = extra.muted)
-            Text("${res.resourceType} · ${res.kicdApprovalCode}", style = MaterialTheme.typography.labelSmall, color = extra.me)
+            if (res.kicdApprovalCode.isNotBlank()) {
+              Text("${res.resourceType} · ${res.kicdApprovalCode}", style = MaterialTheme.typography.labelSmall, color = extra.me)
+            }
           }
         }
       }
@@ -1284,20 +1331,17 @@ fun KicdDesignsScreen(
   }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FeePaymentsScreen(
   state: TeacherUiState,
-  onPostFeePayment: (learner: Learner, amountPaid: Double) -> Unit,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
+  onPostFeePayment: (learner: Learner, amountPaid: Double, method: String, reference: String, day: String, note: String) -> Unit,
+  onRefreshRoster: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
-  val session = state.session ?: return
   val extra = LocalElimuColors.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
-  val learners = state.learners.filter { it.grade == state.selectedGrade }
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
+  val learners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
 
   val totalOutstanding = learners.sumOf { it.feeBalanceKes }.toInt()
   val totalCollected = learners.sumOf { (it.totalFeeKes - it.feeBalanceKes).coerceAtLeast(0.0) }.toInt()
@@ -1345,7 +1389,7 @@ fun FeePaymentsScreen(
 
     if (learners.isEmpty()) {
       item {
-        EmptyClassRosterCard(state.selectedGrade) { onPopulateStarterRoster(state.selectedGrade, activeStream) }
+        EmptyClassRosterCard(classDisplay, onRefreshRoster)
       }
     } else {
       item {
@@ -1399,16 +1443,64 @@ fun FeePaymentsScreen(
         }
       }
     }
+
+    if (state.feePayments.isNotEmpty()) {
+      item {
+        Text("Recent payments", style = MaterialTheme.typography.titleMedium)
+      }
+      items(state.feePayments, key = { it.id }) { pay ->
+        val name = pay.learnerName.ifBlank {
+          learners.firstOrNull { it.id == pay.learnerId }?.fullName ?: "Learner"
+        }
+        Surface(
+          color = MaterialTheme.colorScheme.surface,
+          shape = RoundedCornerShape(14.dp),
+          border = BorderStroke(1.dp, extra.line),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Row(
+            modifier = Modifier.padding(14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(name, style = MaterialTheme.typography.titleSmall)
+              Text(
+                text = "${pay.method.uppercase()} · ${pay.day}${if (pay.reference.isNotBlank()) " · ${pay.reference}" else ""}",
+                style = MaterialTheme.typography.bodySmall,
+                color = extra.muted,
+              )
+            }
+            Text(
+              text = "KES ${String.format("%,d", pay.amount.toInt())}",
+              style = MaterialTheme.typography.titleSmall,
+              color = extra.ee,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+        }
+      }
+    }
   }
 
   selectedLearnerForPayment?.let { learner ->
     var amountInput by remember(learner.id) { mutableStateOf("") }
+    var method by remember(learner.id) { mutableStateOf("mpesa") }
+    var reference by remember(learner.id) { mutableStateOf("") }
+    var day by remember(learner.id) { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
+    var note by remember(learner.id) { mutableStateOf("") }
+    val methods = listOf("mpesa", "cash", "bank", "cheque")
+
     ModalBottomSheet(
       onDismissRequest = { selectedLearnerForPayment = null },
       containerColor = MaterialTheme.colorScheme.background,
     ) {
       Column(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).navigationBarsPadding(),
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          .padding(horizontal = 16.dp, vertical = 8.dp)
+          .navigationBarsPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
       ) {
         Text(learner.fullName, style = MaterialTheme.typography.headlineMedium)
@@ -1422,11 +1514,49 @@ fun FeePaymentsScreen(
           singleLine = true,
           modifier = Modifier.fillMaxWidth(),
         )
+        Text("Payment method", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          methods.forEach { m ->
+            FilterChip(
+              selected = method == m,
+              onClick = { method = m },
+              label = { Text(m.uppercase()) },
+              colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = MaterialTheme.colorScheme.onBackground,
+                selectedLabelColor = MaterialTheme.colorScheme.background,
+              ),
+              shape = RoundedCornerShape(99.dp),
+            )
+          }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+          OutlinedTextField(
+            value = reference,
+            onValueChange = { reference = it },
+            label = { Text("Reference / Code") },
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+          )
+          OutlinedTextField(
+            value = day,
+            onValueChange = { day = it },
+            label = { Text("Date") },
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+          )
+        }
+        OutlinedTextField(
+          value = note,
+          onValueChange = { note = it },
+          label = { Text("Note (optional)") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth(),
+        )
         HighlighterButton(
           text = "Post payment",
           onClick = {
             val amount = amountInput.toDoubleOrNull() ?: 0.0
-            onPostFeePayment(learner, amount)
+            onPostFeePayment(learner, amount, method, reference, day, note)
             if (amount > 0) selectedLearnerForPayment = null
           },
           modifier = Modifier.fillMaxWidth(),
@@ -1441,21 +1571,22 @@ fun FeePaymentsScreen(
 @Composable
 fun WhatsAppScreen(
   state: TeacherUiState,
-  onSaveGuardianMessage: (learner: Learner, template: String, message: String) -> Unit,
-  onPopulateStarterRoster: (grade: String, stream: String) -> Unit,
+  onSaveGuardianMessage: (learner: Learner, message: String) -> Unit,
+  onRefreshRoster: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
   val session = state.session ?: return
   val extra = LocalElimuColors.current
   val context = LocalContext.current
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
-  val activeStream = activeClass?.stream ?: "Delta"
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val savedMessages = state.guardianMessages.filter { it.grade == state.selectedGrade }
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val learnerIds = remember(classLearners) { classLearners.map { it.id }.toSet() }
+  val savedMessages = state.guardianMessages.filter {
+    it.learnerId in learnerIds || it.grade.equals(state.selectedStream, ignoreCase = true) || it.grade == state.selectedGrade
+  }
 
   val templates = listOf("Fee reminder", "Absence check", "Progress update")
-  var selectedLearnerId by remember(state.selectedGrade, gradeLearners) { mutableStateOf(gradeLearners.firstOrNull()?.id) }
+  var selectedLearnerId by remember(state.selectedStream, classLearners) { mutableStateOf(classLearners.firstOrNull()?.id) }
   var selectedTemplate by remember { mutableStateOf(templates.first()) }
   var messageText by remember { mutableStateOf("") }
 
@@ -1478,13 +1609,13 @@ fun WhatsAppScreen(
       )
     }
 
-    if (gradeLearners.isEmpty()) {
+    if (classLearners.isEmpty()) {
       item {
-        EmptyClassRosterCard(state.selectedGrade) { onPopulateStarterRoster(state.selectedGrade, activeStream) }
+        EmptyClassRosterCard(classDisplay, onRefreshRoster)
       }
     } else {
       item {
-        val currentLearner = gradeLearners.firstOrNull { it.id == selectedLearnerId } ?: gradeLearners.first()
+        val currentLearner = classLearners.firstOrNull { it.id == selectedLearnerId } ?: classLearners.first()
         Surface(
           color = MaterialTheme.colorScheme.surface,
           shape = RoundedCornerShape(16.dp),
@@ -1494,7 +1625,7 @@ fun WhatsAppScreen(
           Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Learner", style = MaterialTheme.typography.labelLarge)
             Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              gradeLearners.forEach { l ->
+              classLearners.forEach { l ->
                 FilterChip(
                   selected = currentLearner.id == l.id,
                   onClick = {
@@ -1543,30 +1674,34 @@ fun WhatsAppScreen(
               icon = Icons.AutoMirrored.Filled.Chat,
               onClick = {
                 val finalMsg = messageText.ifBlank { defaultTextForTemplate(selectedTemplate, currentLearner) }
-                onSaveGuardianMessage(currentLearner, selectedTemplate, finalMsg)
-                val phoneDigits = currentLearner.guardianPhone.filter { it.isDigit() }
-                runCatching {
-                  val url = "https://wa.me/$phoneDigits?text=${Uri.encode(finalMsg)}"
-                  context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                }.onFailure {
-                  runCatching {
-                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                      type = "text/plain"
-                      putExtra(Intent.EXTRA_TEXT, finalMsg)
-                    }
-                    context.startActivity(Intent.createChooser(shareIntent, "Send guardian message"))
-                  }
-                }
+                onSaveGuardianMessage(currentLearner, finalMsg)
                 messageText = ""
               },
               modifier = Modifier.fillMaxWidth(),
             )
+
+            if (currentLearner.guardianPhone.isNotBlank()) {
+              OutlinedButton(
+                onClick = {
+                  val finalMsg = messageText.ifBlank { defaultTextForTemplate(selectedTemplate, currentLearner) }
+                  val phoneDigits = currentLearner.guardianPhone.filter { it.isDigit() }
+                  runCatching {
+                    val url = "https://wa.me/$phoneDigits?text=${Uri.encode(finalMsg)}"
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                  }
+                },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Text("Open in WhatsApp app (${currentLearner.guardianPhone})")
+              }
+            }
           }
         }
       }
 
       item {
-        Text("Saved for $classDisplay", style = MaterialTheme.typography.titleMedium)
+        Text("Sent log ($classDisplay)", style = MaterialTheme.typography.titleMedium)
       }
 
       if (savedMessages.isEmpty()) {
@@ -1577,11 +1712,14 @@ fun WhatsAppScreen(
             border = BorderStroke(1.dp, extra.line),
             modifier = Modifier.fillMaxWidth(),
           ) {
-            Text("Nothing saved for this class yet.", style = MaterialTheme.typography.bodyMedium, color = extra.muted, modifier = Modifier.padding(18.dp))
+            Text("No messages logged yet.", style = MaterialTheme.typography.bodyMedium, color = extra.muted, modifier = Modifier.padding(18.dp))
           }
         }
       } else {
         items(savedMessages, key = { it.id }) { m ->
+          val resolvedName = m.learnerName.ifBlank {
+            classLearners.firstOrNull { it.id == m.learnerId }?.fullName ?: "Learner"
+          }
           Surface(
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(16.dp),
@@ -1589,7 +1727,7 @@ fun WhatsAppScreen(
             modifier = Modifier.fillMaxWidth(),
           ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-              Text("${m.learnerName} · ${m.template}", style = MaterialTheme.typography.titleSmall)
+              Text("$resolvedName · ${m.template} · ${m.date}", style = MaterialTheme.typography.titleSmall)
               Text(m.message, style = MaterialTheme.typography.bodySmall, color = extra.muted)
             }
           }

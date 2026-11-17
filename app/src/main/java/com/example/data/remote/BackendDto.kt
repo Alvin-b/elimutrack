@@ -4,188 +4,171 @@ import com.squareup.moshi.JsonClass
 
 @JsonClass(generateAdapter = true)
 data class LoginRequestDto(
-  val identifier: String,
+  val username: String,
   val password: String,
 )
 
 @JsonClass(generateAdapter = true)
-data class AllocatedClassDto(
-  val id: String,
-  val grade: String,
-  val stream: String = "",
-  val learningAreas: List<String> = emptyList(),
-  val learnerCount: Int = 0,
+data class ChangeLoginRequestDto(
+  val username: String? = null,
+  val currentPassword: String,
+  val newPassword: String,
 )
 
 @JsonClass(generateAdapter = true)
-data class TeacherProfileDto(
-  val teacherId: String,
-  val fullName: String,
-  val email: String,
-  val tscNumber: String = "",
-  val schoolName: String = "Fret's School",
-  val currentTerm: String = "Term 1",
-  val currentYear: Int = 2026,
-  val badgeLabel: String = "CAMPUS PREMIUM",
-  val allowedModules: List<String> = emptyList(),
-  val allocatedClasses: List<AllocatedClassDto> = emptyList(),
-)
-
-@JsonClass(generateAdapter = true)
-data class LoginResponseDto(
-  val token: String,
-  val teacher: TeacherProfileDto,
-)
-
-@JsonClass(generateAdapter = true)
-data class LearnerDto(
-  val id: String,
+data class LearnerCreateRequestDto(
+  val name: String,
   val admissionNo: String,
-  val fullName: String,
-  val grade: String,
-  val stream: String = "",
-  val gender: String = "",
-  val guardianPhone: String = "",
-  val pathwayInterest: String = "STEM",
-  val feeBalanceKes: Double = 0.0,
-)
-
-@JsonClass(generateAdapter = true)
-data class TimetableSlotDto(
-  val id: String,
-  val grade: String,
-  val dayOfWeek: String,
-  val slotIndex: Int,
-  val timeRange: String,
-  val learningArea: String,
-  val isBreak: Boolean = false,
-  val room: String = "",
-  val teacherId: String = "",
-)
-
-@JsonClass(generateAdapter = true)
-data class MarkEntryDto(
-  val id: String,
-  val learnerId: String,
-  val learnerName: String,
-  val admissionNo: String,
-  val grade: String,
-  val stream: String = "",
-  val learningArea: String,
-  val term: String,
-  val assessmentType: String,
-  val score: Double,
-  val maxScore: Double = 100.0,
-  val teacherComment: String = "",
-)
-
-@JsonClass(generateAdapter = true)
-data class AttendanceDto(
-  val id: String,
-  val date: String,
-  val grade: String,
-  val stream: String = "",
-  val learningArea: String,
-  val lessonSlot: String,
-  val learnerId: String,
-  val learnerName: String,
-  val admissionNo: String,
-  val status: String,
-  val remarks: String = "",
-)
-
-@JsonClass(generateAdapter = true)
-data class SchemeDto(
-  val id: String,
-  val title: String,
-  val schoolName: String,
-  val teacherName: String,
-  val grade: String,
-  val learningArea: String,
-  val term: String,
-  val year: Int,
-  val rowsJson: String,
-  val updatedAt: Long,
-)
-
-@JsonClass(generateAdapter = true)
-data class LessonPlanDto(
-  val id: String,
-  val schoolName: String,
-  val teacherName: String,
-  val grade: String,
   val stream: String,
-  val learningArea: String,
+  val gradeLevel: String,
+  val gender: String,
+  val nemisUpi: String = "",
+  val knecNo: String = "",
+  val guardianPhone: String = "",
+  val boarding: Boolean = false,
+  val admissionFeePaid: Boolean = false,
+  val additionalFees: Double = 0.0,
+)
+
+@JsonClass(generateAdapter = true)
+data class DeleteIdRequestDto(
+  val id: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class MarkPutItemDto(
+  val learnerId: String,
+  val subjectId: String,
+  val score: Double,
+)
+
+@JsonClass(generateAdapter = true)
+data class MarksPutRequestDto(
+  val items: List<MarkPutItemDto>,
+)
+
+@JsonClass(generateAdapter = true)
+data class AttendancePostItemDto(
+  val learnerId: String,
+  val day: String,
+  val status: String, // present | absent | late
+)
+
+@JsonClass(generateAdapter = true)
+data class AttendancePostRequestDto(
+  val items: List<AttendancePostItemDto>,
+)
+
+@JsonClass(generateAdapter = true)
+data class ObservationPostItemDto(
+  val learnerId: String,
+  val day: String,
+  val note: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class ObservationPostRequestDto(
+  val items: List<ObservationPostItemDto>,
+)
+
+@JsonClass(generateAdapter = true)
+data class SchemeRowApiDto(
+  val id: String? = null,
+  val stream: String,
+  val subjectId: String,
   val term: String,
   val week: Int,
-  val lessonNumber: Int,
-  val date: String,
-  val timeSlot: String,
-  val rollCount: Int,
+  val lesson: Int,
   val strand: String,
   val subStrand: String,
-  val specificOutcomes: String,
-  val keyInquiryQuestions: String,
-  val coreCompetencies: String,
-  val values: String,
-  val pcis: String,
-  val learningResources: String,
-  val introduction: String,
-  val lessonDevelopment: String,
-  val conclusion: String,
-  val extendedActivity: String,
-  val reflection: String,
-  val updatedAt: Long,
+  val outcomes: String,
+  val experiences: String,
+  val inquiry: String,
+  val resources: String,
+  val assessment: String,
+  val remarks: String,
 )
 
 @JsonClass(generateAdapter = true)
-data class RecordOfWorkDto(
-  val id: String,
-  val schoolName: String,
-  val teacherName: String,
-  val grade: String,
-  val stream: String,
-  val learningArea: String,
-  val term: String,
-  val year: Int,
+data class SchemeBulkRowDto(
   val week: Int,
-  val date: String,
+  val lesson: Int,
+  val strand: String,
+  val subStrand: String,
+  val outcomes: String,
+  val experiences: String,
+  val inquiry: String,
+  val resources: String,
+  val assessment: String,
+  val remarks: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class SchemeBulkRequestDto(
+  val stream: String,
+  val subjectId: String,
+  val term: String,
+  val rows: List<SchemeBulkRowDto>,
+)
+
+@JsonClass(generateAdapter = true)
+data class LessonPlanApiRequestDto(
+  val id: String? = null,
+  val stream: String,
+  val subjectId: String,
+  val lessonDate: String,
+  val topic: String,
+  val subStrand: String,
+  val schemeId: String? = null,
+  val term: String,
+  val week: Int,
+  val lesson: Int,
+  val strand: String,
+  val content: Map<String, String>,
+)
+
+@JsonClass(generateAdapter = true)
+data class RecordWorkApiDto(
+  val id: String? = null,
+  val stream: String,
+  val subjectId: String,
+  val day: String,
+  val topic: String,
+  val term: String,
   val strand: String,
   val subStrand: String,
   val workCovered: String,
-  val challengesRemarks: String,
-  val teacherInitials: String,
-  val updatedAt: Long,
+  val schemeId: String? = null,
+  val lessonPlanId: String? = null,
+  val week: Int,
+  val lesson: Int,
+  val classSize: Int,
+  val absences: String,
+  val homework: String,
+  val remarks: String,
 )
 
 @JsonClass(generateAdapter = true)
-data class ObservationDto(
-  val id: String,
+data class ProgressPostRequestDto(
   val learnerId: String,
-  val learnerName: String,
-  val grade: String,
-  val competency: String,
-  val ratingCode: String,
-  val note: String,
-  val date: String,
+  val day: String,
+  val stage: String, // Beginning | Developing | Secure | Exceeding
+  val note: String? = null,
+  val subjectId: String? = null,
 )
 
 @JsonClass(generateAdapter = true)
-data class TeacherBootstrapDto(
-  val teacher: TeacherProfileDto,
-  val learners: List<LearnerDto> = emptyList(),
-  val timetable: List<TimetableSlotDto> = emptyList(),
-  val marks: List<MarkEntryDto> = emptyList(),
-  val attendance: List<AttendanceDto> = emptyList(),
-  val schemes: List<SchemeDto> = emptyList(),
-  val lessonPlans: List<LessonPlanDto> = emptyList(),
-  val recordsOfWork: List<RecordOfWorkDto> = emptyList(),
-  val observations: List<ObservationDto> = emptyList(),
+data class PaymentPostRequestDto(
+  val learnerId: String,
+  val amount: Double,
+  val method: String, // cash | mpesa | bank | cheque
+  val reference: String,
+  val day: String,
+  val note: String? = null,
 )
 
 @JsonClass(generateAdapter = true)
-data class SyncAckDto(
-  val ok: Boolean = true,
-  val count: Int = 0,
-  val message: String = "",
+data class WhatsAppPostRequestDto(
+  val learnerId: String,
+  val message: String,
 )

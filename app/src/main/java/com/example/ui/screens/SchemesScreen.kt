@@ -52,7 +52,6 @@ import com.example.data.curriculum.KicdCurriculumRepository
 import com.example.domain.model.KicdDesignItem
 import com.example.domain.model.SchemeOfWork
 import com.example.domain.model.SchemeRow
-import com.example.ui.components.GradeSelectorRow
 import com.example.ui.components.HighlighterButton
 import com.example.ui.components.SubScreenHeader
 import com.example.ui.theme.LocalElimuColors
@@ -61,37 +60,43 @@ import com.example.ui.viewmodel.TeacherUiState
 @Composable
 fun SchemesScreen(
   state: TeacherUiState,
-  onSelectGrade: (String) -> Unit,
   onSaveScheme: (existingId: String?, title: String, grade: String, learningArea: String, term: String, year: Int, rows: List<SchemeRow>) -> Unit,
-  onDeleteScheme: (String) -> Unit,
+  onDeleteScheme: (SchemeOfWork) -> Unit,
   onExportPdf: (SchemeOfWork) -> Unit,
   onPlanLessonRow: (topic: String, outcomes: String) -> Unit,
   onClearKicdPrefill: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
   val extra = LocalElimuColors.current
+  val classDisplay = state.activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
   var editingScheme by remember { mutableStateOf<SchemeOfWork?>(null) }
   var isCreating by remember { mutableStateOf(false) }
   var showKicdPicker by remember { mutableStateOf(false) }
 
+  val gradeSubjects = remember(state.selectedGrade) {
+    KicdCurriculumRepository.subjectsForGrade(state.selectedGrade)
+  }
+  var selectedSubjectId by remember(state.selectedGrade) {
+    mutableStateOf(gradeSubjects.firstOrNull()?.id ?: "math")
+  }
+  val selectedAreaName = remember(selectedSubjectId, gradeSubjects) {
+    gradeSubjects.firstOrNull { it.id == selectedSubjectId }?.name
+      ?: KicdCurriculumRepository.areaNameForSubjectId(selectedSubjectId)
+  }
+
   var title by remember { mutableStateOf("") }
-  var grade by remember { mutableStateOf(state.selectedGrade) }
-  val levelAreas = KicdCurriculumRepository.cbcLearningAreasByLevel[KicdCurriculumRepository.levelForGrade(state.selectedGrade)].orEmpty()
-  var selectedAreaFilter by remember(state.selectedGrade) { mutableStateOf(levelAreas.firstOrNull() ?: "Mathematics") }
-  var learningArea by remember { mutableStateOf(selectedAreaFilter) }
-  var term by remember { mutableStateOf(state.session?.currentTerm ?: "Term 3") }
+  var learningArea by remember { mutableStateOf(selectedAreaName) }
+  var term by remember { mutableStateOf(state.session?.currentTerm ?: "Term 1") }
   var yearText by remember { mutableStateOf((state.session?.currentYear ?: 2026).toString()) }
   var rows by remember { mutableStateOf<List<SchemeRow>>(emptyList()) }
 
   fun openNewEditor(prefill: KicdDesignItem? = null) {
-    val g = prefill?.grade ?: state.selectedGrade
-    val defaultArea = prefill?.learningArea ?: selectedAreaFilter
+    val defaultArea = prefill?.learningArea ?: selectedAreaName
     editingScheme = null
-    grade = g
     learningArea = defaultArea
-    term = state.session?.currentTerm ?: "Term 3"
+    term = state.session?.currentTerm ?: "Term 1"
     yearText = (state.session?.currentYear ?: 2026).toString()
-    title = "$g $defaultArea $term Scheme"
+    title = "$classDisplay · $defaultArea ($term)"
     rows = if (prefill != null) {
       listOf(
         SchemeRow(
@@ -135,7 +140,10 @@ fun SchemesScreen(
           IconButton(onClick = { isCreating = false; editingScheme = null }) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
           }
-          Text(if (editingScheme == null) "New Scheme of Work" else "Edit Scheme of Work", style = MaterialTheme.typography.titleLarge)
+          Column {
+            Text(if (editingScheme == null) "New Scheme of Work" else "Edit Scheme of Work", style = MaterialTheme.typography.titleLarge)
+            Text(classDisplay, style = MaterialTheme.typography.bodySmall, color = extra.muted)
+          }
         }
         OutlinedButton(onClick = { showKicdPicker = true }) {
           Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -151,7 +159,22 @@ fun SchemesScreen(
         modifier = Modifier.fillMaxWidth().testTag("scheme_title_input"),
       )
 
-      GradeSelectorRow(KicdCurriculumRepository.cbcGrades, grade, onSelectGrade = { grade = it })
+      Text("Learning area", style = MaterialTheme.typography.labelLarge)
+      Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        gradeSubjects.forEach { subj ->
+          val active = KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, learningArea) == subj.id
+          FilterChip(
+            selected = active,
+            onClick = { learningArea = subj.name },
+            label = { Text(subj.name) },
+            colors = FilterChipDefaults.filterChipColors(
+              selectedContainerColor = MaterialTheme.colorScheme.onBackground,
+              selectedLabelColor = MaterialTheme.colorScheme.background,
+            ),
+            shape = RoundedCornerShape(99.dp),
+          )
+        }
+      }
 
       Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(value = learningArea, onValueChange = { learningArea = it }, label = { Text("Learning Area") }, modifier = Modifier.weight(1.4f))
@@ -196,6 +219,7 @@ fun SchemesScreen(
             OutlinedTextField(value = row.learningExperiences, onValueChange = { v -> rows = rows.toMutableList().also { it[idx] = row.copy(learningExperiences = v) } }, label = { Text("Learning Experiences") }, minLines = 2, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = row.learningResources, onValueChange = { v -> rows = rows.toMutableList().also { it[idx] = row.copy(learningResources = v) } }, label = { Text("Learning Resources") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = row.assessmentMethods, onValueChange = { v -> rows = rows.toMutableList().also { it[idx] = row.copy(assessmentMethods = v) } }, label = { Text("Assessment Methods") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = row.reflection, onValueChange = { v -> rows = rows.toMutableList().also { it[idx] = row.copy(reflection = v) } }, label = { Text("Remarks") }, modifier = Modifier.fillMaxWidth())
           }
         }
       }
@@ -215,7 +239,7 @@ fun SchemesScreen(
       HighlighterButton(
         text = "Save scheme",
         onClick = {
-          onSaveScheme(editingScheme?.id, title, grade, learningArea, term, yearText.toIntOrNull() ?: 2026, rows)
+          onSaveScheme(editingScheme?.id, title, state.selectedGrade, learningArea, term, yearText.toIntOrNull() ?: 2026, rows)
           isCreating = false
           editingScheme = null
         },
@@ -225,19 +249,19 @@ fun SchemesScreen(
     }
 
     if (showKicdPicker) {
+      val pickerDesigns = (state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns).distinctBy { it.id }
       AlertDialog(
         onDismissRequest = { showKicdPicker = false },
         title = { Text("Auto-Fill from KICD Design") },
         text = {
           Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            KicdCurriculumRepository.kicdDesigns.forEach { d ->
+            pickerDesigns.forEach { d ->
               Surface(
                 color = MaterialTheme.colorScheme.background,
                 shape = RoundedCornerShape(10.dp),
                 onClick = {
-                  grade = d.grade
                   learningArea = d.learningArea
-                  title = "${d.grade} ${d.learningArea} $term Scheme"
+                  title = "$classDisplay · ${d.learningArea} ($term)"
                   val newRow = SchemeRow(
                     week = rows.size + 1,
                     lesson = 1,
@@ -280,7 +304,12 @@ fun SchemesScreen(
       }
     },
   ) { innerPadding ->
-    val saved = state.schemes.filter { it.grade == state.selectedGrade }
+    val saved = state.schemes.filter {
+      it.grade == state.selectedGrade &&
+        (KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, it.learningArea) == selectedSubjectId ||
+          it.learningArea.equals(selectedAreaName, ignoreCase = true))
+    }.ifEmpty { state.schemes.filter { it.grade == state.selectedGrade } }
+
     val sampleRows = KicdCurriculumRepository.kicdDesigns.filter { it.grade == state.selectedGrade }
       .ifEmpty { KicdCurriculumRepository.kicdDesigns.take(3) }
 
@@ -292,16 +321,16 @@ fun SchemesScreen(
       item {
         SubScreenHeader(
           title = "Schemes of work",
-          subtitle = "${state.selectedGrade} · $selectedAreaFilter",
+          subtitle = "$classDisplay · $selectedAreaName",
           onBackToServices = onBackToServices,
         )
         Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          levelAreas.forEach { a ->
+          gradeSubjects.forEach { subj ->
             FilterChip(
-              selected = selectedAreaFilter == a,
-              onClick = { selectedAreaFilter = a },
-              label = { Text(a) },
+              selected = selectedSubjectId == subj.id,
+              onClick = { selectedSubjectId = subj.id },
+              label = { Text(subj.name) },
               colors = FilterChipDefaults.filterChipColors(
                 selectedContainerColor = MaterialTheme.colorScheme.onBackground,
                 selectedLabelColor = MaterialTheme.colorScheme.background,
@@ -334,7 +363,6 @@ fun SchemesScreen(
                 OutlinedButton(onClick = {
                   editingScheme = scheme
                   title = scheme.title
-                  grade = scheme.grade
                   learningArea = scheme.learningArea
                   term = scheme.term
                   yearText = scheme.year.toString()
@@ -347,7 +375,7 @@ fun SchemesScreen(
                   icon = Icons.Filled.PictureAsPdf,
                 )
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { onDeleteScheme(scheme.id) }) {
+                IconButton(onClick = { onDeleteScheme(scheme) }) {
                   Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = extra.be)
                 }
               }

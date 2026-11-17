@@ -550,4 +550,10 @@ class PdfExportManager(private val context: Context) {
       }
     }
   }
+
+  fun writeTextToUri(content: String, targetUri: Uri) {
+    context.contentResolver.openOutputStream(targetUri)?.bufferedWriter()?.use { writer ->
+      writer.write(content)
+    }
+  }
 }

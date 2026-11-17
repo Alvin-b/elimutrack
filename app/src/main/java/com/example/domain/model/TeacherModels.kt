@@ -38,14 +38,18 @@ enum class TeacherModule(
   WHATSAPP("whatsapp", "WhatsApp", "WhatsApp", "Messages to guardians", ServiceGroup.SCHOOL);
 
   companion object {
-    fun fromKey(key: String): TeacherModule? = when (key.trim().lowercase()) {
-      "recordwork" -> RECORD_OF_WORK
-      "kicd" -> KICD_DESIGNS
-      "reportcards" -> REPORT_CARDS
-      "marks" -> MARKSBOOK
-      "fees" -> FEE_PAYMENTS
-      "approved_resources" -> KICD_DESIGNS
-      else -> entries.firstOrNull { it.key.equals(key.trim(), ignoreCase = true) }
+    fun fromKey(key: String): TeacherModule? = when (key.trim().lowercase().replace("-", "_")) {
+      "recordwork", "record_of_work", "records_of_work" -> RECORD_OF_WORK
+      "kicd", "kicd_designs" -> KICD_DESIGNS
+      "resources", "approved_resources" -> KICD_DESIGNS
+      "reportcards", "report_cards", "reports" -> REPORT_CARDS
+      "marks", "marksbook" -> MARKSBOOK
+      "fees", "fee_payments", "payments" -> FEE_PAYMENTS
+      "lessonplans", "lesson_plans" -> LESSON_PLANS
+      "register", "attendance" -> ATTENDANCE
+      "observe", "observations" -> OBSERVATIONS
+      "today", "dashboard" -> DASHBOARD
+      else -> entries.firstOrNull { it.key.equals(key.trim().replace("-", "_"), ignoreCase = true) }
     }
 
     val defaultTeacherModules: Set<TeacherModule> = entries.toSet()
@@ -87,8 +91,14 @@ data class AllocatedClass(
   val stream: String,
   val learningAreas: List<String>,
   val learnerCount: Int = 0,
+  val streamKey: String = if (stream.isBlank()) grade else "$grade $stream",
 ) {
-  val displayName: String get() = if (stream.isBlank()) grade else "$grade $stream"
+  val displayName: String
+    get() = when {
+      streamKey.isNotBlank() && stream.isBlank() -> streamKey
+      stream.isBlank() -> grade
+      else -> "$grade $stream"
+    }
 }
 
 @JsonClass(generateAdapter = true)
@@ -102,6 +112,7 @@ data class TeacherSession(
   val currentTerm: String = "Term 3",
   val currentYear: Int = 2026,
   val badgeLabel: String = "CAMPUS PREMIUM",
+  val role: String = "teacher",
   val backendUrl: String = DEFAULT_BACKEND_URL,
   val authToken: String = "",
   val isOfflineWorkspace: Boolean = false,
@@ -116,6 +127,21 @@ data class TeacherSession(
     const val DEFAULT_BACKEND_URL = "https://site-4457d1964dd64e19ba7fec208a2066ee.freebuff.page/api/"
   }
 }
+
+data class DashboardSummary(
+  val stream: String = "",
+  val learnerCount: Int? = null,
+  val attendancePct: Int? = null,
+  val presentToday: Int? = null,
+  val absentToday: Int? = null,
+  val meanScore: Int? = null,
+  val marksEntered: Int? = null,
+  val feeCollectedKes: Double? = null,
+  val feeOutstandingKes: Double? = null,
+  val plansCount: Int? = null,
+  val schemesCount: Int? = null,
+  val observationsCount: Int? = null,
+)
 
 data class SyncStatus(
   val isSyncing: Boolean = false,

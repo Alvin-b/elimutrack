@@ -22,6 +22,9 @@ interface SchemeDao {
 
   @Query("DELETE FROM schemes_of_work WHERE id = :id")
   suspend fun deleteById(id: String)
+
+  @Query("DELETE FROM schemes_of_work")
+  suspend fun deleteAll()
 }
 
 @Dao
@@ -40,6 +43,9 @@ interface LessonPlanDao {
 
   @Query("DELETE FROM lesson_plans WHERE id = :id")
   suspend fun deleteById(id: String)
+
+  @Query("DELETE FROM lesson_plans")
+  suspend fun deleteAll()
 }
 
 @Dao
@@ -58,6 +64,9 @@ interface RecordOfWorkDao {
 
   @Query("DELETE FROM records_of_work WHERE id = :id")
   suspend fun deleteById(id: String)
+
+  @Query("DELETE FROM records_of_work")
+  suspend fun deleteAll()
 }
 
 @Dao
@@ -77,6 +86,12 @@ interface LearnerDao {
   @Query("DELETE FROM learners WHERE id = :id")
   suspend fun deleteById(id: String)
 
+  @Query("DELETE FROM learners WHERE stream = :stream")
+  suspend fun deleteForStream(stream: String)
+
+  @Query("DELETE FROM learners")
+  suspend fun deleteAll()
+
   @Query("SELECT COUNT(*) FROM learners")
   suspend fun count(): Int
 }
@@ -91,6 +106,12 @@ interface AttendanceDao {
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsertAll(items: List<AttendanceEntity>)
+
+  @Query("DELETE FROM attendance_records WHERE stream = :stream AND date = :date")
+  suspend fun deleteForStreamDay(stream: String, date: String)
+
+  @Query("DELETE FROM attendance_records")
+  suspend fun deleteAll()
 }
 
 @Dao
@@ -106,6 +127,12 @@ interface MarkEntryDao {
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsertAll(items: List<MarkEntryEntity>)
+
+  @Query("DELETE FROM mark_entries WHERE stream = :stream")
+  suspend fun deleteForStream(stream: String)
+
+  @Query("DELETE FROM mark_entries")
+  suspend fun deleteAll()
 }
 
 @Dao
@@ -124,6 +151,9 @@ interface ObservationDao {
 
   @Query("DELETE FROM observation_notes WHERE id = :id")
   suspend fun deleteById(id: String)
+
+  @Query("DELETE FROM observation_notes")
+  suspend fun deleteAll()
 }
 
 @Dao
@@ -133,6 +163,15 @@ interface LearnerProgressDao {
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsert(item: LearnerProgressEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertAll(items: List<LearnerProgressEntity>)
+
+  @Query("DELETE FROM learner_progress WHERE id = :id")
+  suspend fun deleteById(id: String)
+
+  @Query("DELETE FROM learner_progress")
+  suspend fun deleteAll()
 }
 
 @Dao
@@ -142,6 +181,12 @@ interface GuardianMessageDao {
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsert(item: GuardianMessageEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertAll(items: List<GuardianMessageEntity>)
+
+  @Query("DELETE FROM guardian_messages")
+  suspend fun deleteAll()
 }
 
 @Dao
@@ -160,6 +205,9 @@ interface TimetableDao {
 
   @Query("DELETE FROM timetable_slots WHERE grade = :grade")
   suspend fun deleteForGrade(grade: String)
+
+  @Query("DELETE FROM timetable_slots")
+  suspend fun deleteAll()
 
   @Query("SELECT COUNT(*) FROM timetable_slots")
   suspend fun count(): Int

@@ -480,8 +480,8 @@ fun GradeSelectorRow(
 @Composable
 fun ClassPickerSheet(
   allocatedClasses: List<AllocatedClass>,
-  currentGrade: String,
-  learnerCountByGrade: Map<String, Int>,
+  currentStream: String,
+  learnerCountByStream: Map<String, Int>,
   onSelectClass: (AllocatedClass) -> Unit,
   onDismiss: () -> Unit,
 ) {
@@ -500,8 +500,9 @@ fun ClassPickerSheet(
       Text("Choose a class", style = MaterialTheme.typography.headlineMedium)
       Spacer(Modifier.height(4.dp))
       allocatedClasses.forEach { cls ->
-        val isCurrent = cls.grade == currentGrade
-        val count = learnerCountByGrade[cls.grade] ?: cls.learnerCount
+        val isCurrent = cls.streamKey.equals(currentStream, ignoreCase = true) ||
+          cls.displayName.equals(currentStream, ignoreCase = true)
+        val count = learnerCountByStream[cls.streamKey] ?: cls.learnerCount
         Surface(
           color = MaterialTheme.colorScheme.surface,
           shape = RoundedCornerShape(14.dp),
@@ -522,7 +523,7 @@ fun ClassPickerSheet(
             Column {
               Text(cls.displayName, style = MaterialTheme.typography.titleMedium)
               Text(
-                text = "${cls.learningAreas.size} learning areas · $count learners",
+                text = if (count > 0) "${cls.learningAreas.size} learning areas · $count learners" else "${cls.learningAreas.size} learning areas",
                 style = MaterialTheme.typography.bodySmall,
                 color = extra.muted,
               )
@@ -542,107 +543,6 @@ fun ClassPickerSheet(
             }
           }
         }
-      }
-      Spacer(Modifier.height(16.dp))
-    }
-  }
-}
-
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-@Composable
-fun AdminAllocationsSheet(
-  session: TeacherSession,
-  onToggleGrade: (String) -> Unit,
-  onUpdateModules: (Set<TeacherModule>) -> Unit,
-  onToggleFirstSignIn: (Boolean) -> Unit,
-  onDismiss: () -> Unit,
-) {
-  val extra = LocalElimuColors.current
-  val allowed = session.allowedModules
-  val assignedGrades = session.allocatedClasses.map { it.grade }.toSet()
-
-  ModalBottomSheet(
-    onDismissRequest = onDismiss,
-    containerColor = MaterialTheme.colorScheme.background,
-  ) {
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .verticalScroll(rememberScrollState())
-        .padding(horizontal = 16.dp, vertical = 8.dp)
-        .navigationBarsPadding(),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      Text("Admin allocations", style = MaterialTheme.typography.headlineMedium)
-      Text(
-        text = "Switch services and classes on or off, the way Staff & Access does. Your dashboard rebuilds itself.",
-        style = MaterialTheme.typography.bodySmall,
-        color = extra.muted,
-      )
-
-      Text("Classes assigned", style = MaterialTheme.typography.titleSmall)
-      androidx.compose.foundation.layout.FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-      ) {
-        KicdCurriculumRepository.cbcGrades.forEach { grade ->
-          val active = grade in assignedGrades
-          FilterChip(
-            selected = active,
-            onClick = { onToggleGrade(grade) },
-            label = { Text(grade) },
-            colors = FilterChipDefaults.filterChipColors(
-              selectedContainerColor = MaterialTheme.colorScheme.onBackground,
-              selectedLabelColor = MaterialTheme.colorScheme.background,
-            ),
-          )
-        }
-      }
-
-      HorizontalDivider(color = extra.line)
-      Text("Services (${allowed.size} active)", style = MaterialTheme.typography.titleSmall)
-
-      TeacherModule.entries.forEach { mod ->
-        val enabled = mod in allowed
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .clickable {
-              val next = if (enabled) allowed - mod else allowed + mod
-              onUpdateModules(next)
-            }
-            .padding(vertical = 4.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text(mod.label, style = MaterialTheme.typography.titleSmall)
-            Text(mod.description, style = MaterialTheme.typography.bodySmall, color = extra.muted)
-          }
-          Switch(
-            checked = enabled,
-            onCheckedChange = { checked ->
-              val next = if (checked) allowed + mod else allowed - mod
-              onUpdateModules(next)
-            },
-          )
-        }
-      }
-
-      HorizontalDivider(color = extra.line)
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Column(modifier = Modifier.weight(1f)) {
-          Text("First sign-in", style = MaterialTheme.typography.titleSmall)
-          Text("Teacher must set their own login first", style = MaterialTheme.typography.bodySmall, color = extra.muted)
-        }
-        Switch(
-          checked = session.mustChangePassword,
-          onCheckedChange = onToggleFirstSignIn,
-        )
       }
       Spacer(Modifier.height(16.dp))
     }

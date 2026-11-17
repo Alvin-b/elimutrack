@@ -20,7 +20,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
@@ -49,7 +51,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.data.curriculum.KicdCurriculumRepository
 import com.example.domain.model.ServiceGroup
 import com.example.domain.model.TeacherModule
 import com.example.ui.components.HighlighterButton
@@ -68,14 +69,14 @@ import java.util.Locale
 fun HomeScreen(
   state: TeacherUiState,
   onNavigateModule: (TeacherModule) -> Unit,
-  onSelectClassAndRegister: (grade: String) -> Unit,
-  onOpenAdminPreview: () -> Unit,
+  onSelectClassAndRegister: (streamKey: String) -> Unit,
+  onRefresh: () -> Unit,
 ) {
   val session = state.session ?: return
   val extra = LocalElimuColors.current
   val allowed = session.allowedModules
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val classDisplay = activeClass?.displayName ?: state.selectedGrade
+  val activeClass = state.activeClass
+  val classDisplay = activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
 
   val dayCode = when (Calendar.getInstance().get(Calendar.DAY_OF_WEEK)) {
     Calendar.TUESDAY -> "TUE"
@@ -90,18 +91,27 @@ fun HomeScreen(
     .sortedBy { it.slotIndex }
   val nextLesson = todayLessons.firstOrNull()
 
-  val totalLearners = state.learners.size
-  val gradeLearners = state.learners.filter { it.grade == state.selectedGrade }
-  val avgAtt = if (gradeLearners.isEmpty()) 96 else gradeLearners.map { it.termAttendancePct }.average().toInt()
-  val gradeMarks = state.marks.filter { it.grade == state.selectedGrade }
-  val classMean = if (gradeMarks.isEmpty()) "--" else "${gradeMarks.map { it.score }.average().toInt()}"
-  val feesOutstanding = gradeLearners.sumOf { it.feeBalanceKes }
+  val classLearners = state.learners.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val classMarks = state.marks.filter { state.matchesActiveClass(it.stream, it.grade) }
+  val summary = state.dashboardSummary?.takeIf {
+    it.stream.isBlank() || it.stream.equals(state.selectedStream, ignoreCase = true)
+  }
+
+  val totalLearners = summary?.learnerCount ?: classLearners.size
+  val avgAtt = summary?.attendancePct
+    ?: if (classLearners.isEmpty()) 0 else classLearners.map { it.termAttendancePct }.average().toInt()
+  val classMean = summary?.meanScore?.toString()
+    ?: if (classMarks.isEmpty()) "--" else "${classMarks.map { it.score }.average().toInt()}"
+  val feesOutstanding = summary?.feeOutstandingKes ?: classLearners.sumOf { it.feeBalanceKes }
+  val plansCount = summary?.plansCount ?: state.lessonPlans.count { state.matchesActiveClass(it.stream, it.grade) }
+  val obsCount = summary?.observationsCount ?: state.observations.count { it.grade == state.selectedGrade }
 
   val quickActions = listOf(
     Triple(TeacherModule.ATTENDANCE, "Take the register", TeacherModule.ATTENDANCE),
     Triple(TeacherModule.MARKSBOOK, "Enter marks", TeacherModule.MARKSBOOK),
     Triple(TeacherModule.LESSON_PLANS, "Write a lesson plan", TeacherModule.LESSON_PLANS),
     Triple(TeacherModule.OBSERVATIONS, "Add an observation", TeacherModule.OBSERVATIONS),
+    Triple(TeacherModule.SCHEMES, "Schemes of work", TeacherModule.SCHEMES),
     Triple(TeacherModule.RECORD_OF_WORK, "Record work covered", TeacherModule.RECORD_OF_WORK),
     Triple(TeacherModule.PROGRESS, "Record progress", TeacherModule.PROGRESS),
   ).filter { it.first in allowed }.take(4)
@@ -111,7 +121,7 @@ fun HomeScreen(
     contentPadding = PaddingValues(16.dp),
     verticalArrangement = Arrangement.spacedBy(12.dp),
   ) {
-    // Exercise Book Cover Card with White Ruled Label & Red Margin Stripe
+    // Exercise Book Cover Card with Ruled Label & Red Margin Stripe
     item {
       Surface(
         color = extra.navy,
@@ -119,7 +129,6 @@ fun HomeScreen(
         modifier = Modifier.fillMaxWidth(),
       ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-          // Ruled paper label with 3dp red left margin
           Surface(
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(6.dp),
@@ -146,7 +155,7 @@ fun HomeScreen(
                   .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
               ) {
-                Text("Teacher", style = MaterialTheme.typography.bodySmall, color = extra.muted)
+                Text("Teacher · ${session.schoolName}", style = MaterialTheme.typography.bodySmall, color = extra.muted)
                 Text(
                   text = session.fullName,
                   style = MaterialTheme.typography.headlineMedium,
@@ -186,9 +195,9 @@ fun HomeScreen(
                   color = Color.White.copy(alpha = 0.8f),
                 )
               }
-              if (TeacherModule.ATTENDANCE in allowed) {
+              if (TeacherModule.ATTENDANCE in allowed && activeClass != null) {
                 Button(
-                  onClick = { onSelectClassAndRegister(state.selectedGrade) },
+                  onClick = { onSelectClassAndRegister(activeClass.streamKey) },
                   colors = ButtonDefaults.buttonColors(
                     containerColor = extra.highlighter,
                     contentColor = extra.highlighterInk,
@@ -212,31 +221,31 @@ fun HomeScreen(
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             NotebookStatCard(
               value = "$totalLearners",
-              label = "Learners in ${session.allocatedClasses.size} classes",
+              label = "Learners in $classDisplay",
               modifier = Modifier.weight(1f),
             )
             NotebookStatCard(
               value = "$avgAtt%",
-              label = "Term attendance, ${state.selectedGrade}",
+              label = "Attendance ($classDisplay)",
               modifier = Modifier.weight(1f),
             )
           }
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             NotebookStatCard(
               value = classMean,
-              label = "Class mean (${state.selectedGrade})",
+              label = "Class mean ($classDisplay)",
               modifier = Modifier.weight(1f),
             )
             if (TeacherModule.FEE_PAYMENTS in allowed) {
               NotebookStatCard(
-                value = "${(feesOutstanding / 1000).toInt()}k",
+                value = if (feesOutstanding >= 1000) "${(feesOutstanding / 1000).toInt()}k" else "${feesOutstanding.toInt()}",
                 label = "Fees outstanding (KES)",
                 modifier = Modifier.weight(1f),
               )
             } else {
               NotebookStatCard(
-                value = "${state.observations.size + state.progressEntries.size}",
-                label = "Notes you've saved",
+                value = "${plansCount + obsCount}",
+                label = "Plans & observations",
                 modifier = Modifier.weight(1f),
               )
             }
@@ -317,25 +326,38 @@ fun HomeScreen(
           border = BorderStroke(1.dp, extra.line),
           modifier = Modifier.fillMaxWidth(),
         ) {
-          Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
-            todayLessons.forEachIndexed { idx, slot ->
-              if (idx > 0) HorizontalDivider(color = extra.line)
-              Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Text(
-                  text = slot.timeRange,
-                  style = MaterialTheme.typography.labelSmall,
-                  fontWeight = FontWeight.Bold,
-                  modifier = Modifier.width(94.dp),
-                )
-                Row(modifier = Modifier.weight(1f).height(IntrinsicSize.Min)) {
-                  Box(modifier = Modifier.width(4.dp).fillMaxHeight().background(extra.me))
-                  Spacer(Modifier.width(9.dp))
-                  Column {
-                    Text(slot.learningArea, style = MaterialTheme.typography.titleSmall)
-                    Text(classDisplay, style = MaterialTheme.typography.bodySmall, color = extra.muted)
+          if (todayLessons.isEmpty()) {
+            Text(
+              text = "No timetable slots published for $dayCode yet.",
+              style = MaterialTheme.typography.bodySmall,
+              color = extra.muted,
+              modifier = Modifier.padding(14.dp),
+            )
+          } else {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+              todayLessons.forEachIndexed { idx, slot ->
+                if (idx > 0) HorizontalDivider(color = extra.line)
+                Row(
+                  modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Text(
+                    text = slot.timeRange,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.width(94.dp),
+                  )
+                  Row(modifier = Modifier.weight(1f).height(IntrinsicSize.Min)) {
+                    Box(modifier = Modifier.width(4.dp).fillMaxHeight().background(extra.me))
+                    Spacer(Modifier.width(9.dp))
+                    Column {
+                      Text(slot.learningArea, style = MaterialTheme.typography.titleSmall)
+                      Text(
+                        text = if (slot.room.isNotBlank()) slot.room else classDisplay,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = extra.muted,
+                      )
+                    }
                   }
                 }
               }
@@ -353,14 +375,18 @@ fun HomeScreen(
           border = BorderStroke(1.dp, extra.line),
           modifier = Modifier.fillMaxWidth(),
         ) {
-          Column(modifier = Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Column(
+            modifier = Modifier.padding(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
             Text(
-              text = "Your admin hasn't switched on any services yet. Ask them to add some from Staff & Access.",
+              text = "Your school administrator hasn't switched on any services yet. Ask them to enable modules in Staff & Access.",
               style = MaterialTheme.typography.bodyMedium,
               color = extra.muted,
             )
-            OutlinedButton(onClick = onOpenAdminPreview) {
-              Text("Preview Admin Allocations")
+            OutlinedButton(onClick = onRefresh) {
+              Text("Refresh permissions")
             }
           }
         }
@@ -497,15 +523,17 @@ fun ServicesHubScreen(
 fun MeScreen(
   state: TeacherUiState,
   onToggleDarkMode: (Boolean) -> Unit,
-  onUpdateLogin: (username: String, password: String) -> Unit,
-  onOpenAdminPreview: () -> Unit,
+  onChangeLogin: (username: String, currentPassword: String, newPassword: String) -> Unit,
+  onSaveServerUrl: (String) -> Unit,
   onSyncNow: () -> Unit,
   onLogout: () -> Unit,
 ) {
   val session = state.session ?: return
   val extra = LocalElimuColors.current
   var username by remember(session.username) { mutableStateOf(session.username) }
-  var password by remember { mutableStateOf("") }
+  var currentPassword by remember { mutableStateOf("") }
+  var newPassword by remember { mutableStateOf("") }
+  var serverUrl by remember(session.backendUrl) { mutableStateOf(session.backendUrl) }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -528,24 +556,32 @@ fun MeScreen(
       ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
           Text("Assigned classes", style = MaterialTheme.typography.titleSmall)
-          session.allocatedClasses.forEachIndexed { idx, cls ->
-            if (idx > 0) HorizontalDivider(color = extra.line)
-            Row(
-              modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              Text(cls.displayName, style = MaterialTheme.typography.titleSmall)
-              Surface(
-                color = MaterialTheme.colorScheme.background,
-                border = BorderStroke(1.dp, extra.line),
-                shape = RoundedCornerShape(99.dp),
+          if (session.allocatedClasses.isEmpty()) {
+            Text(
+              text = "No streams assigned yet.",
+              style = MaterialTheme.typography.bodySmall,
+              color = extra.muted,
+            )
+          } else {
+            session.allocatedClasses.forEachIndexed { idx, cls ->
+              if (idx > 0) HorizontalDivider(color = extra.line)
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
               ) {
-                Text(
-                  text = "${cls.learningAreas.size} learning areas",
-                  style = MaterialTheme.typography.labelMedium,
-                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                )
+                Text(cls.displayName, style = MaterialTheme.typography.titleSmall)
+                Surface(
+                  color = MaterialTheme.colorScheme.background,
+                  border = BorderStroke(1.dp, extra.line),
+                  shape = RoundedCornerShape(99.dp),
+                ) {
+                  Text(
+                    text = "${cls.learningAreas.size} learning areas",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                  )
+                }
               }
             }
           }
@@ -589,16 +625,28 @@ fun MeScreen(
             modifier = Modifier.fillMaxWidth(),
           )
           OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            label = { Text("New password") },
+            value = currentPassword,
+            onValueChange = { currentPassword = it },
+            label = { Text("Current password") },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+          )
+          OutlinedTextField(
+            value = newPassword,
+            onValueChange = { newPassword = it },
+            label = { Text("New password (min 6 chars)") },
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
           )
           HighlighterButton(
             text = "Update login",
-            onClick = { onUpdateLogin(username, password) },
+            onClick = {
+              onChangeLogin(username, currentPassword, newPassword)
+              currentPassword = ""
+              newPassword = ""
+            },
             modifier = Modifier.fillMaxWidth(),
           )
         }
@@ -612,9 +660,9 @@ fun MeScreen(
         border = BorderStroke(1.dp, extra.line),
         modifier = Modifier.fillMaxWidth(),
       ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
           Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
           ) {
@@ -625,34 +673,30 @@ fun MeScreen(
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .clickable(onClick = onOpenAdminPreview)
-              .padding(vertical = 12.dp)
-              .testTag("preview_as_admin_row"),
+              .clickable(onClick = onSyncNow)
+              .padding(vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
           ) {
-            Column {
-              Text("Preview as admin", style = MaterialTheme.typography.titleSmall)
-              Text("Change what this teacher can see", style = MaterialTheme.typography.bodySmall, color = extra.muted)
+            Column(modifier = Modifier.weight(1f)) {
+              Text("Sync with server", style = MaterialTheme.typography.titleSmall)
+              Text(session.backendUrl, style = MaterialTheme.typography.labelSmall, color = extra.muted)
             }
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = extra.muted)
           }
-          if (!session.isOfflineWorkspace) {
-            HorizontalDivider(color = extra.line)
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onSyncNow)
-                .padding(vertical = 12.dp),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              Column {
-                Text("Sync with backend", style = MaterialTheme.typography.titleSmall)
-                Text(session.backendUrl, style = MaterialTheme.typography.labelSmall, color = extra.muted)
-              }
-              Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = extra.muted)
-            }
+          OutlinedTextField(
+            value = serverUrl,
+            onValueChange = { serverUrl = it },
+            label = { Text("School server URL") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+          )
+          OutlinedButton(
+            onClick = { onSaveServerUrl(serverUrl) },
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text("Save server URL")
           }
         }
       }
@@ -673,15 +717,18 @@ fun MeScreen(
 @Composable
 fun FirstSignInLockScreen(
   defaultUsername: String,
-  onSaveAndContinue: (username: String, password: String) -> Unit,
+  onSaveAndContinue: (username: String, currentPassword: String, newPassword: String) -> Unit,
+  onLogout: () -> Unit,
 ) {
   val extra = LocalElimuColors.current
   var username by remember { mutableStateOf(defaultUsername) }
-  var password by remember { mutableStateOf("") }
+  var currentPassword by remember { mutableStateOf("") }
+  var newPassword by remember { mutableStateOf("") }
 
   Column(
     modifier = Modifier
       .fillMaxSize()
+      .verticalScroll(rememberScrollState())
       .padding(16.dp),
     verticalArrangement = Arrangement.spacedBy(12.dp),
   ) {
@@ -709,7 +756,7 @@ fun FirstSignInLockScreen(
       modifier = Modifier.fillMaxWidth(),
     ) {
       Text(
-        text = "Your admin created this account. Choose a new username and password to open your dashboard.",
+        text = "Your admin created this account. Confirm your current password and set a new password to open your dashboard.",
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.padding(12.dp),
       )
@@ -730,8 +777,16 @@ fun FirstSignInLockScreen(
           modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-          value = password,
-          onValueChange = { password = it },
+          value = currentPassword,
+          onValueChange = { currentPassword = it },
+          label = { Text("Current password") },
+          visualTransformation = PasswordVisualTransformation(),
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+          value = newPassword,
+          onValueChange = { newPassword = it },
           label = { Text("New password (min 6 chars)") },
           visualTransformation = PasswordVisualTransformation(),
           singleLine = true,
@@ -739,9 +794,16 @@ fun FirstSignInLockScreen(
         )
         HighlighterButton(
           text = "Save and continue",
-          onClick = { onSaveAndContinue(username, password) },
+          onClick = { onSaveAndContinue(username, currentPassword, newPassword) },
           modifier = Modifier.fillMaxWidth(),
         )
+        OutlinedButton(
+          onClick = onLogout,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Text("Sign out")
+        }
       }
     }
   }

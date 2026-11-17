@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.curriculum.KicdCurriculumRepository
 import com.example.data.local.ElimuTrackDatabase
 import com.example.data.local.SessionPreferences
+import com.example.data.remote.BackendApiParser
 import com.example.data.remote.NetworkModule
 import com.example.data.repository.TeacherRepository
 import com.example.domain.model.AttendanceRecord
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -47,15 +49,18 @@ class ExampleRobolectricTest {
       email = "fret@school.ke",
       tscNumber = "TSC-100",
       schoolName = "Fret's School",
-      allowedModuleKeys = listOf("dashboard", "schemes", "lesson_plans", "attendance", "marks"),
+      allowedModuleKeys = listOf("dashboard", "schemes", "lessonplans", "recordwork", "attendance", "marks", "fees", "kicd"),
     )
     val allowed = session.allowedModules
     assertTrue(TeacherModule.DASHBOARD in allowed)
     assertTrue(TeacherModule.SCHEMES in allowed)
     assertTrue(TeacherModule.LESSON_PLANS in allowed)
+    assertTrue(TeacherModule.RECORD_OF_WORK in allowed)
     assertTrue(TeacherModule.ATTENDANCE in allowed)
     assertTrue(TeacherModule.MARKSBOOK in allowed)
-    assertFalse(TeacherModule.FEE_PAYMENTS in allowed)
+    assertTrue(TeacherModule.FEE_PAYMENTS in allowed)
+    assertTrue(TeacherModule.KICD_DESIGNS in allowed)
+    assertFalse(TeacherModule.WHATSAPP in allowed)
     assertEquals(TeacherModule.WHATSAPP, TeacherModule.fromKey("whatsapp"))
   }
 
@@ -82,6 +87,14 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun `subject id mapping matches primary and junior secondary api ids`() {
+    assertEquals("math_p", KicdCurriculumRepository.subjectIdForArea("Grade 4", "Mathematics"))
+    assertEquals("env_p", KicdCurriculumRepository.subjectIdForArea("Grade 3", "Environmental Activities"))
+    assertEquals("math", KicdCurriculumRepository.subjectIdForArea("Grade 7", "Mathematics"))
+    assertEquals("isci", KicdCurriculumRepository.subjectIdForArea("Grade 8", "Integrated Science"))
+  }
+
+  @Test
   fun `network module normalizes backend urls`() {
     assertEquals(
       "https://school.example.com/api/",
@@ -91,6 +104,113 @@ class ExampleRobolectricTest {
       "http://10.0.2.2:8080/api/",
       NetworkModule.normalizeBaseUrl("http://10.0.2.2:8080/api/"),
     )
+    assertEquals(
+      "https://site-4457d1964dd64e19ba7fec208a2066ee.freebuff.page/api/",
+      NetworkModule.normalizeBaseUrl("https://site-4457d1964dd64e19ba7fec208a2066ee.freebuff.page"),
+    )
+  }
+
+  @Test
+  fun `backend parser parses login session, streams, and mustChangeLogin`() {
+    val json = """
+      {
+        "token": "tok_abc123",
+        "role": "teacher",
+        "tenant": { "name": "Fret Academy", "currentTerm": "Term 2", "currentYear": 2026 },
+        "services": ["dashboard", "marks", "lessonplans", "attendance"],
+        "streams": ["Grade 4 East", "Grade 7 North"],
+        "staff": {
+          "id": "stf_1",
+          "name": "Alvina Njoroge",
+          "username": "alvina",
+          "tscNumber": "TSC-9981",
+          "mustChangeLogin": true
+        }
+      }
+    """.trimIndent()
+    val session = BackendApiParser.parseSession(
+      raw = json,
+      existingToken = "",
+      backendUrl = TeacherSession.DEFAULT_BACKEND_URL,
+    )
+    assertEquals("tok_abc123", session.authToken)
+    assertEquals("Alvina Njoroge", session.fullName)
+    assertEquals("alvina", session.username)
+    assertEquals("Fret Academy", session.schoolName)
+    assertEquals("Term 2", session.currentTerm)
+    assertTrue(session.mustChangePassword)
+    assertEquals(listOf("Grade 4 East", "Grade 7 North"), session.allocatedClasses.map { it.streamKey })
+    assertEquals("Grade 4", session.allocatedClasses.first().grade)
+    assertTrue(TeacherModule.LESSON_PLANS in session.allowedModules)
+    assertFalse(TeacherModule.FEE_PAYMENTS in session.allowedModules)
+  }
+
+  @Test
+  fun `backend parser parses dashboard summary, timetable periods+entries, and lesson plan template`() {
+    val dashRaw = """
+      {
+        "learners": 34,
+        "attendancePct": 94,
+        "presentToday": 32,
+        "absentToday": 2,
+        "classMean": 71
+      }
+    """.trimIndent()
+    val dash = BackendApiParser.parseDashboard(dashRaw, "Grade 7 North")
+    assertEquals(34, dash.learnerCount)
+    assertEquals(94, dash.attendancePct)
+    assertEquals(71, dash.meanScore)
+    assertNull(dash.schemesCount)
+
+    val ttRaw = """
+      {
+        "periods": [
+          { "id": "p1", "label": "Lesson 1", "start": "08:20", "end": "09:00" },
+          { "id": "b1", "label": "BREAK", "start": "09:40", "end": "10:00" }
+        ],
+        "entries": [
+          { "id": "e1", "stream": "Grade 7 North", "day": "Monday", "periodId": "p1", "subjectId": "math", "teacher": "Alvina" },
+          { "id": "e2", "stream": "Grade 7 North", "day": "Monday", "periodId": "b1", "subjectId": "", "teacher": "" }
+        ]
+      }
+    """.trimIndent()
+    val slots = BackendApiParser.parseTimetable(ttRaw)
+    assertEquals(2, slots.size)
+    assertEquals("MON", slots[0].dayOfWeek)
+    assertEquals("08:20 - 09:00", slots[0].timeRange)
+    assertEquals("MATHEMATICS", slots[0].learningArea)
+    assertTrue(slots[1].isBreak)
+
+    val lpRaw = """
+      {
+        "template": {
+          "sections": [
+            { "key": "sec1", "label": "Specific Learning Outcomes" },
+            { "key": "sec6", "label": "Introduction" }
+          ]
+        },
+        "plans": [
+          {
+            "id": "lp_99",
+            "stream": "Grade 7 North",
+            "subjectId": "math",
+            "term": "Term 1",
+            "week": 3,
+            "lesson": 2,
+            "lessonDate": "2026-02-12",
+            "topic": "Integers",
+            "content": { "sec1": "Add integers", "sec6": "Number line warm-up" }
+          }
+        ]
+      }
+    """.trimIndent()
+    val (sections, plans) = BackendApiParser.parseLessonPlans(lpRaw, "Fret Academy", "Alvina", "Grade 7 North")
+    assertEquals(2, sections.size)
+    assertEquals("sec1", sections[0].key)
+    assertEquals(1, plans.size)
+    assertEquals("2026-02-12", plans[0].date)
+    assertEquals("Add integers", plans[0].specificOutcomes)
+    assertEquals("Number line warm-up", plans[0].introduction)
   }
 
   @Test

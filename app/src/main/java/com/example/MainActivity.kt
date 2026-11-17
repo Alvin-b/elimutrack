@@ -13,13 +13,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -28,11 +37,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.domain.model.TeacherModule
-import com.example.ui.components.AdminAllocationsSheet
 import com.example.ui.components.BottomNavTab
 import com.example.ui.components.ClassPickerSheet
 import com.example.ui.components.ElimuBottomBar
@@ -103,7 +113,6 @@ fun ElimuTrackRoot(
   val extra = LocalElimuColors.current
   val snackbarHostState = remember { SnackbarHostState() }
   var showClassPicker by remember { mutableStateOf(false) }
-  var showAdminPreview by remember { mutableStateOf(false) }
   var openedFromServices by remember { mutableStateOf(false) }
 
   val savePdfLauncher = rememberLauncherForActivityResult(
@@ -112,6 +121,15 @@ fun ElimuTrackRoot(
     val pdf = state.exportedPdf
     if (uri != null && pdf != null) {
       viewModel.savePdfToUri(pdf, uri)
+    }
+  }
+
+  val saveCsvLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.CreateDocument("text/csv"),
+  ) { uri ->
+    val csv = state.exportedCsv
+    if (uri != null && csv != null) {
+      viewModel.saveCsvToUri(csv.second, uri)
     }
   }
 
@@ -138,16 +156,14 @@ fun ElimuTrackRoot(
       isLoggingIn = state.isLoggingIn,
       loginError = state.loginError,
       onBackendLogin = viewModel::loginWithBackend,
-      onOfflineWorkspace = { teacherName, tscNumber, schoolName, backendUrl, grades, username ->
-        viewModel.enterOfflineWorkspace(teacherName, tscNumber, schoolName, backendUrl, grades, username)
-      },
+      onClearError = viewModel::clearLoginError,
     )
     return
   }
 
   val allowed = session.allowedModules
-  val activeClass = session.allocatedClasses.firstOrNull { it.grade == state.selectedGrade }
-  val selectedClassDisplay = activeClass?.displayName ?: state.selectedGrade
+  val activeClass = state.activeClass
+  val selectedClassDisplay = activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
 
   if (state.destination == AppDestination.MODULE) {
     BackHandler {
@@ -237,7 +253,8 @@ fun ElimuTrackRoot(
         if (session.mustChangePassword) {
           FirstSignInLockScreen(
             defaultUsername = session.username,
-            onSaveAndContinue = viewModel::updateLoginCredentials,
+            onSaveAndContinue = viewModel::changeLogin,
+            onLogout = viewModel::logout,
           )
         } else {
           when (state.destination) {
@@ -247,12 +264,12 @@ fun ElimuTrackRoot(
                 openedFromServices = mod != TeacherModule.ATTENDANCE && mod != TeacherModule.MARKSBOOK
                 viewModel.navigateToModule(mod)
               },
-              onSelectClassAndRegister = { grade ->
-                viewModel.selectGrade(grade)
+              onSelectClassAndRegister = { streamKey ->
+                viewModel.selectStream(streamKey)
                 openedFromServices = false
                 viewModel.navigateToModule(TeacherModule.ATTENDANCE)
               },
-              onOpenAdminPreview = { showAdminPreview = true },
+              onRefresh = { viewModel.refreshActiveStream(showToast = true) },
             )
 
             AppDestination.SERVICES -> ServicesHubScreen(
@@ -266,8 +283,8 @@ fun ElimuTrackRoot(
             AppDestination.ME -> MeScreen(
               state = state,
               onToggleDarkMode = viewModel::toggleDarkMode,
-              onUpdateLogin = viewModel::updateLoginCredentials,
-              onOpenAdminPreview = { showAdminPreview = true },
+              onChangeLogin = viewModel::changeLogin,
+              onSaveServerUrl = viewModel::saveServerUrl,
               onSyncNow = viewModel::syncNow,
               onLogout = viewModel::logout,
             )
@@ -289,23 +306,18 @@ fun ElimuTrackRoot(
   }
 
   if (showClassPicker) {
-    val countByGrade = state.learners.groupBy { it.grade }.mapValues { it.value.size }
+    val countByStream = session.allocatedClasses.associate { cls ->
+      cls.streamKey to state.learners.count {
+        it.stream.equals(cls.streamKey, ignoreCase = true) ||
+          (it.grade == cls.grade && it.stream.equals(cls.stream, ignoreCase = true))
+      }
+    }
     ClassPickerSheet(
       allocatedClasses = session.allocatedClasses,
-      currentGrade = state.selectedGrade,
-      learnerCountByGrade = countByGrade,
-      onSelectClass = { cls -> viewModel.selectGrade(cls.grade) },
+      currentStream = state.selectedStream,
+      learnerCountByStream = countByStream,
+      onSelectClass = { cls -> viewModel.selectStream(cls.streamKey) },
       onDismiss = { showClassPicker = false },
-    )
-  }
-
-  if (showAdminPreview) {
-    AdminAllocationsSheet(
-      session = session,
-      onToggleGrade = viewModel::toggleAllocatedGrade,
-      onUpdateModules = viewModel::updateModulePermissions,
-      onToggleFirstSignIn = viewModel::setFirstSignInRequired,
-      onDismiss = { showAdminPreview = false },
     )
   }
 
@@ -316,6 +328,45 @@ fun ElimuTrackRoot(
       onOpenPdf = { viewModel.openPdf(pdf, shareOnly = false) },
       onSharePdf = { viewModel.openPdf(pdf, shareOnly = true) },
       onSaveCopy = { savePdfLauncher.launch(pdf.file.name) },
+    )
+  }
+
+  state.exportedCsv?.let { (fileName, csvContent) ->
+    val lineCount = csvContent.lines().count { it.isNotBlank() }.coerceAtLeast(1)
+    AlertDialog(
+      onDismissRequest = viewModel::clearExportedCsv,
+      icon = {
+        Icon(
+          imageVector = Icons.Filled.TableChart,
+          contentDescription = "CSV Ready",
+          tint = extra.navy,
+          modifier = Modifier.size(34.dp),
+        )
+      },
+      title = { Text("Broadsheet CSV Ready", fontWeight = FontWeight.Bold) },
+      text = {
+        Text(
+          "$fileName ($lineCount rows) downloaded from your school server. Choose where to save the spreadsheet.",
+          style = MaterialTheme.typography.bodyMedium,
+        )
+      },
+      confirmButton = {
+        Button(
+          onClick = { saveCsvLauncher.launch(fileName) },
+          colors = ButtonDefaults.buttonColors(containerColor = extra.navy),
+          modifier = Modifier.testTag("save_csv_confirm_button"),
+        ) {
+          Text("Save CSV")
+        }
+      },
+      dismissButton = {
+        TextButton(
+          onClick = viewModel::clearExportedCsv,
+          modifier = Modifier.testTag("dismiss_csv_button"),
+        ) {
+          Text("Close")
+        }
+      },
     )
   }
 }
@@ -333,23 +384,21 @@ private fun ModuleRouter(
     TeacherModule.DASHBOARD -> HomeScreen(
       state = state,
       onNavigateModule = onNavigateFromModule,
-      onSelectClassAndRegister = { grade ->
-        viewModel.selectGrade(grade)
+      onSelectClassAndRegister = { streamKey ->
+        viewModel.selectStream(streamKey)
         viewModel.navigateToModule(TeacherModule.ATTENDANCE)
       },
-      onOpenAdminPreview = {},
+      onRefresh = { viewModel.refreshActiveStream(showToast = true) },
     )
     TeacherModule.TIMETABLE -> TimetableScreen(
       state = state,
-      onSelectGrade = viewModel::selectGrade,
-      onUpdateSlot = viewModel::updateTimetableSlot,
-      onResetGradeTimetable = viewModel::resetTimetableForGrade,
+      onSelectStream = viewModel::selectStream,
+      onRefresh = { viewModel.refreshActiveStream(showToast = true) },
       onExportTimetablePdf = viewModel::exportTimetablePdf,
       onBackToServices = onBackToServices,
     )
     TeacherModule.SCHEMES -> SchemesScreen(
       state = state,
-      onSelectGrade = viewModel::selectGrade,
       onSaveScheme = viewModel::saveScheme,
       onDeleteScheme = viewModel::deleteScheme,
       onExportPdf = viewModel::exportSchemePdf,
@@ -375,39 +424,41 @@ private fun ModuleRouter(
     )
     TeacherModule.ATTENDANCE -> AttendanceScreen(
       state = state,
+      onFetchAttendanceForDay = viewModel::fetchAttendanceForDay,
       onSaveAttendance = viewModel::saveAttendance,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
       onBackToServices = backCallback,
     )
     TeacherModule.MARKSBOOK -> MarksbookScreen(
       state = state,
       onSaveMarksBatch = viewModel::saveMarksBatch,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
       onBackToServices = backCallback,
     )
     TeacherModule.PROGRESS -> LearnerProgressScreen(
       state = state,
       onSaveProgress = viewModel::saveProgressEntry,
+      onDeleteProgress = viewModel::deleteProgressEntry,
       onExportLearnerPdf = viewModel::exportStudentProgressPdf,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
       onBackToServices = onBackToServices,
     )
     TeacherModule.REPORT_CARDS -> ReportCardsScreen(
       state = state,
       onExportLearnerPdf = viewModel::exportStudentProgressPdf,
       onShowMessage = viewModel::showMessage,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
       onBackToServices = onBackToServices,
     )
     TeacherModule.BROADSHEET -> BroadsheetScreen(
       state = state,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
-      onShowMessage = viewModel::showMessage,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
+      onExportBroadsheetCsv = viewModel::exportBroadsheetCsv,
       onBackToServices = onBackToServices,
     )
     TeacherModule.KICD_DESIGNS -> KicdDesignsScreen(
       state = state,
-      onSelectGrade = viewModel::selectGrade,
+      onLoadKicdDesigns = viewModel::loadKicdAndResources,
       onUseInScheme = viewModel::useKicdInScheme,
       onUseInLessonPlan = viewModel::useKicdInLessonPlan,
       onBackToServices = onBackToServices,
@@ -415,7 +466,7 @@ private fun ModuleRouter(
     TeacherModule.LEARNERS -> LearnersScreen(
       state = state,
       onAddLearner = viewModel::addLearner,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
       onNavigateModule = onNavigateFromModule,
       onExportLearnerPdf = viewModel::exportStudentProgressPdf,
       onBackToServices = onBackToServices,
@@ -423,8 +474,7 @@ private fun ModuleRouter(
     TeacherModule.OBSERVATIONS -> ObservationsScreen(
       state = state,
       onSaveObservation = viewModel::saveObservation,
-      onDeleteObservation = viewModel::deleteObservation,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
       onBackToServices = onBackToServices,
     )
     TeacherModule.PATHWAYS -> PathwaysScreen(
@@ -434,13 +484,13 @@ private fun ModuleRouter(
     TeacherModule.FEE_PAYMENTS -> FeePaymentsScreen(
       state = state,
       onPostFeePayment = viewModel::postFeePayment,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
       onBackToServices = onBackToServices,
     )
     TeacherModule.WHATSAPP -> WhatsAppScreen(
       state = state,
       onSaveGuardianMessage = viewModel::saveGuardianMessage,
-      onPopulateStarterRoster = viewModel::populateStarterRoster,
+      onRefreshRoster = { viewModel.refreshActiveStream(showToast = true) },
       onBackToServices = onBackToServices,
     )
   }

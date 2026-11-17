@@ -2,6 +2,7 @@ package com.example.data.remote
 
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import okhttp3.CookieJar
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -20,13 +21,17 @@ object NetworkModule {
     }
 
     val client = OkHttpClient.Builder()
+      .cookieJar(CookieJar.NO_COOKIES)
       .connectTimeout(15, TimeUnit.SECONDS)
-      .readTimeout(20, TimeUnit.SECONDS)
-      .writeTimeout(20, TimeUnit.SECONDS)
+      .readTimeout(25, TimeUnit.SECONDS)
+      .writeTimeout(25, TimeUnit.SECONDS)
       .addInterceptor(logger)
       .addInterceptor { chain ->
         val reqBuilder = chain.request().newBuilder()
           .header("Accept", "application/json")
+        if (chain.request().body != null) {
+          reqBuilder.header("Content-Type", "application/json")
+        }
         if (authToken.isNotBlank()) {
           reqBuilder.header("Authorization", "Bearer $authToken")
         }
@@ -49,6 +54,11 @@ object NetworkModule {
     } else {
       "https://$trimmed"
     }
-    return if (withScheme.endsWith("/")) withScheme else "$withScheme/"
+    val noTrailing = withScheme.trimEnd('/')
+    return if (noTrailing.endsWith("/api")) {
+      "$noTrailing/"
+    } else {
+      "$noTrailing/api/"
+    }
   }
 }

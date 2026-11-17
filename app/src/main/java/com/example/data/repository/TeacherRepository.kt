@@ -13,23 +13,41 @@ import com.example.data.local.RecordOfWorkEntity
 import com.example.data.local.SchemeEntity
 import com.example.data.local.SessionPreferences
 import com.example.data.local.TimetableSlotEntity
-import com.example.data.remote.AttendanceDto
-import com.example.data.remote.LessonPlanDto
+import com.example.data.remote.ApiException
+import com.example.data.remote.AttendancePostItemDto
+import com.example.data.remote.AttendancePostRequestDto
+import com.example.data.remote.BackendApiParser
+import com.example.data.remote.ChangeLoginRequestDto
+import com.example.data.remote.DeleteIdRequestDto
+import com.example.data.remote.ElimuTrackApiService
+import com.example.data.remote.LearnerCreateRequestDto
+import com.example.data.remote.LessonPlanApiRequestDto
 import com.example.data.remote.LoginRequestDto
-import com.example.data.remote.MarkEntryDto
+import com.example.data.remote.MarkPutItemDto
+import com.example.data.remote.MarksPutRequestDto
 import com.example.data.remote.NetworkModule
-import com.example.data.remote.ObservationDto
-import com.example.data.remote.RecordOfWorkDto
-import com.example.data.remote.SchemeDto
-import com.example.data.remote.TeacherBootstrapDto
+import com.example.data.remote.ObservationPostItemDto
+import com.example.data.remote.ObservationPostRequestDto
+import com.example.data.remote.PaymentPostRequestDto
+import com.example.data.remote.ProgressPostRequestDto
+import com.example.data.remote.RecordWorkApiDto
+import com.example.data.remote.SchemeBulkRequestDto
+import com.example.data.remote.SchemeBulkRowDto
+import com.example.data.remote.SchemeRowApiDto
+import com.example.data.remote.WhatsAppPostRequestDto
 import com.example.domain.model.AllocatedClass
+import com.example.domain.model.ApprovedResource
 import com.example.domain.model.AttendanceRecord
 import com.example.domain.model.AttendanceStatus
 import com.example.domain.model.CbcPerformanceLevel
+import com.example.domain.model.DashboardSummary
+import com.example.domain.model.FeePaymentRecord
 import com.example.domain.model.GuardianMessage
+import com.example.domain.model.KicdDesignItem
 import com.example.domain.model.Learner
 import com.example.domain.model.LearnerProgressEntry
 import com.example.domain.model.LessonPlan
+import com.example.domain.model.LessonPlanTemplateSection
 import com.example.domain.model.MarkEntry
 import com.example.domain.model.ObservationNote
 import com.example.domain.model.RecordOfWork
@@ -44,6 +62,9 @@ import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class TeacherRepository(
   private val db: ElimuTrackDatabase,
@@ -54,60 +75,40 @@ class TeacherRepository(
   private val rowsAdapter = moshi.adapter<List<SchemeRow>>(rowListType)
 
   val sessionFlow: Flow<TeacherSession?> = prefs.sessionFlow
-  val backendUrlFlow: Flow<String> = prefs.backendUrlFlow
   val darkModeFlow: Flow<Boolean> = prefs.darkModeFlow
+  val backendUrlFlow: Flow<String> = prefs.backendUrlFlow
   val lastSyncedAtFlow: Flow<Long?> = prefs.lastSyncedAtFlow
 
-  val schemesFlow: Flow<List<SchemeOfWork>> = db.schemeDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
+  val schemesFlow: Flow<List<SchemeOfWork>> = db.schemeDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val lessonPlansFlow: Flow<List<LessonPlan>> = db.lessonPlanDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val recordsOfWorkFlow: Flow<List<RecordOfWork>> = db.recordOfWorkDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val learnersFlow: Flow<List<Learner>> = db.learnerDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val attendanceFlow: Flow<List<AttendanceRecord>> = db.attendanceDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val marksFlow: Flow<List<MarkEntry>> = db.markEntryDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val observationsFlow: Flow<List<ObservationNote>> = db.observationDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val progressEntriesFlow: Flow<List<LearnerProgressEntry>> = db.learnerProgressDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val guardianMessagesFlow: Flow<List<GuardianMessage>> = db.guardianMessageDao().observeAll().map { list -> list.map { it.toDomain() } }
+  val timetableFlow: Flow<List<TimetableSlot>> = db.timetableDao().observeAll().map { list -> list.map { it.toDomain() } }
 
-  val lessonPlansFlow: Flow<List<LessonPlan>> = db.lessonPlanDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
+  private val kicdCache = mutableMapOf<Pair<String, String>, Pair<List<KicdDesignItem>, List<ApprovedResource>>>()
 
-  val recordsOfWorkFlow: Flow<List<RecordOfWork>> = db.recordOfWorkDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
+  private fun apiFor(session: TeacherSession): ElimuTrackApiService =
+    NetworkModule.createService(session.backendUrl, session.authToken)
 
-  val learnersFlow: Flow<List<Learner>> = db.learnerDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
-
-  val attendanceFlow: Flow<List<AttendanceRecord>> = db.attendanceDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
-
-  val marksFlow: Flow<List<MarkEntry>> = db.markEntryDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
-
-  val observationsFlow: Flow<List<ObservationNote>> = db.observationDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
-
-  val progressEntriesFlow: Flow<List<LearnerProgressEntry>> = db.learnerProgressDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
-
-  val guardianMessagesFlow: Flow<List<GuardianMessage>> = db.guardianMessageDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
-
-  val timetableFlow: Flow<List<TimetableSlot>> = db.timetableDao().observeAll().map { list ->
-    list.map { it.toDomain() }
-  }
+  private fun todayIso(): String =
+    SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
   suspend fun ensureTimetableSeeded() {
-    if (db.timetableDao().count() == 0) {
-      val defaults = KicdCurriculumRepository.cbcGrades.flatMap { grade ->
+    val existingTotal = db.timetableDao().count()
+    if (existingTotal == 0) {
+      val all = KicdCurriculumRepository.cbcGrades.flatMap { grade ->
         KicdCurriculumRepository.defaultTimetableForGrade(grade)
-      }
-      db.timetableDao().upsertAll(defaults.map { it.toEntity() })
+      }.map { it.toEntity() }
+      db.timetableDao().upsertAll(all)
     } else {
-      KicdCurriculumRepository.cbcGrades.forEach { grade ->
-        val expected = KicdCurriculumRepository.timeSlotsForGrade(grade).size * 5
-        if (db.timetableDao().countForGrade(grade) < expected) {
+      for (grade in KicdCurriculumRepository.cbcGrades) {
+        val expectedPerDay = KicdCurriculumRepository.timeSlotsForGrade(grade).size
+        if (db.timetableDao().countForGrade(grade) < expectedPerDay * 5) {
           db.timetableDao().deleteForGrade(grade)
           db.timetableDao().upsertAll(
             KicdCurriculumRepository.defaultTimetableForGrade(grade).map { it.toEntity() }
@@ -128,253 +129,716 @@ class TeacherRepository(
     )
   }
 
+  // --- Authentication & Session Lifecycle ---
+
   suspend fun loginToBackend(
     backendUrl: String,
-    identifier: String,
+    username: String,
     password: String,
   ): Result<TeacherSession> = runCatching {
     val normalized = NetworkModule.normalizeBaseUrl(backendUrl)
     val api = NetworkModule.createService(normalized)
-    val response = api.login(LoginRequestDto(identifier.trim(), password))
-    if (!response.isSuccessful) {
-      throw IllegalStateException("Backend returned HTTP ${response.code()}: ${response.message()}")
+    val raw = BackendApiParser.unwrapOrThrow(api.login(LoginRequestDto(username.trim(), password)))
+    val session = BackendApiParser.parseSession(raw, existingToken = "", backendUrl = normalized)
+    if (session.authToken.isBlank()) {
+      throw IllegalStateException("Server did not return an authentication token.")
     }
-    val body = response.body() ?: throw IllegalStateException("Empty login response from server")
-    val teacher = body.teacher
-    val session = TeacherSession(
-      teacherId = teacher.teacherId,
-      fullName = teacher.fullName,
-      username = identifier.trim().substringBefore("@"),
-      email = teacher.email,
-      tscNumber = teacher.tscNumber,
-      schoolName = teacher.schoolName,
-      currentTerm = teacher.currentTerm,
-      currentYear = teacher.currentYear,
-      badgeLabel = teacher.badgeLabel,
-      backendUrl = normalized,
-      authToken = body.token,
-      isOfflineWorkspace = false,
-      allowedModuleKeys = teacher.allowedModules.ifEmpty {
-        TeacherModule.defaultTeacherModules.map { it.key }
-      },
-      allocatedClasses = teacher.allocatedClasses.map {
-        AllocatedClass(
-          id = it.id,
-          grade = it.grade,
-          stream = it.stream,
-          learningAreas = it.learningAreas,
-          learnerCount = it.learnerCount,
-        )
-      },
-    )
+    clearCachedDomainTables()
     prefs.saveSession(session)
-    ensureTimetableSeeded()
-    syncWithBackend(session)
+    prefs.saveBackendUrl(normalized)
     session
   }
 
-  suspend fun enterOfflineWorkspace(
-    teacherName: String,
-    tscNumber: String,
-    schoolName: String,
-    backendUrl: String,
-    allocatedGrades: List<String>,
-    username: String = "",
-  ): TeacherSession {
-    val defaultStreams = listOf("Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota")
-    val classes = allocatedGrades.ifEmpty { listOf("Grade 4", "Grade 7", "Grade 9") }.mapIndexed { idx, grade ->
-      val gradeNum = grade.filter { it.isDigit() }.toIntOrNull()?.minus(1) ?: idx
-      val stream = defaultStreams.getOrElse(gradeNum) { "East" }
-      val level = KicdCurriculumRepository.levelForGrade(grade)
-      val areas = KicdCurriculumRepository.cbcLearningAreasByLevel[level].orEmpty()
-      AllocatedClass(
-        id = "cls_${grade.lowercase().replace(" ", "_")}_$idx",
-        grade = grade,
-        stream = stream,
-        learningAreas = areas,
-        learnerCount = 0,
-      )
+  suspend fun verifySessionOnLaunch(): Result<TeacherSession?> = runCatching {
+    val current = prefs.sessionFlow.first() ?: return@runCatching null
+    if (current.authToken.isBlank()) return@runCatching null
+    val api = apiFor(current)
+    try {
+      val raw = BackendApiParser.unwrapOrThrow(api.getSession())
+      val refreshed = BackendApiParser.parseSession(raw, current.authToken, current.backendUrl)
+      prefs.saveSession(refreshed)
+      refreshed
+    } catch (e: ApiException) {
+      when {
+        e.httpCode == 401 || e.code == "UNAUTHENTICATED" -> {
+          clearSessionAndData()
+          throw e
+        }
+        e.code == "MUST_CHANGE_LOGIN" -> {
+          val locked = current.copy(mustChangePassword = true)
+          prefs.saveSession(locked)
+          locked
+        }
+        else -> current
+      }
     }
-    val resolvedName = teacherName.ifBlank { "Alvin Ojiambo" }
-    val resolvedUsername = username.trim().ifBlank {
-      resolvedName.trim().lowercase().replace(" ", ".").ifBlank { "alvina" }
-    }
-    val session = TeacherSession(
-      teacherId = "local_${tscNumber.ifBlank { "teacher" }}",
-      fullName = resolvedName,
-      username = resolvedUsername,
-      email = "teacher@fretsschool.ac.ke",
-      tscNumber = tscNumber.ifBlank { "TSC-482910" },
-      schoolName = schoolName.ifBlank { "Fret's School" },
-      currentTerm = "Term 3",
-      currentYear = 2026,
-      badgeLabel = "CAMPUS PREMIUM",
-      backendUrl = NetworkModule.normalizeBaseUrl(backendUrl),
-      authToken = "",
-      isOfflineWorkspace = true,
-      allowedModuleKeys = TeacherModule.defaultTeacherModules.map { it.key },
-      allocatedClasses = classes,
-    )
-    prefs.saveSession(session)
-    ensureTimetableSeeded()
-    return session
   }
 
-  suspend fun syncWithBackend(activeSession: TeacherSession? = null): Result<String> = runCatching {
-    val session = activeSession ?: prefs.sessionFlow.first()
-      ?: throw IllegalStateException("No active teacher session")
-    if (session.isOfflineWorkspace || session.authToken.isBlank()) {
+  suspend fun changeLogin(
+    username: String,
+    currentPassword: String,
+    newPassword: String,
+  ): Result<TeacherSession> = runCatching {
+    val current = prefs.sessionFlow.first() ?: throw IllegalStateException("No active teacher session")
+    val api = apiFor(current)
+    val trimmedUser = username.trim().ifBlank { null }
+    BackendApiParser.unwrapOrThrow(
+      api.changeLogin(
+        ChangeLoginRequestDto(
+          username = trimmedUser,
+          currentPassword = currentPassword,
+          newPassword = newPassword,
+        )
+      )
+    )
+    val refreshedRaw = BackendApiParser.unwrapOrThrow(api.getSession())
+    val updated = BackendApiParser.parseSession(refreshedRaw, current.authToken, current.backendUrl)
+      .copy(mustChangePassword = false)
+    prefs.saveSession(updated)
+    updated
+  }
+
+  suspend fun logout() {
+    val current = prefs.sessionFlow.first()
+    if (current != null && current.authToken.isNotBlank()) {
+      runCatching { apiFor(current).logout() }
+    }
+    clearSessionAndData()
+  }
+
+  private suspend fun clearSessionAndData() {
+    prefs.clearSession()
+    clearCachedDomainTables()
+  }
+
+  private suspend fun clearCachedDomainTables() {
+    db.schemeDao().deleteAll()
+    db.lessonPlanDao().deleteAll()
+    db.recordOfWorkDao().deleteAll()
+    db.learnerDao().deleteAll()
+    db.attendanceDao().deleteAll()
+    db.markEntryDao().deleteAll()
+    db.observationDao().deleteAll()
+    db.learnerProgressDao().deleteAll()
+    db.guardianMessageDao().deleteAll()
+  }
+
+  suspend fun saveBackendUrl(rawUrl: String) {
+    val normalized = NetworkModule.normalizeBaseUrl(rawUrl)
+    prefs.saveBackendUrl(normalized)
+    val current = prefs.sessionFlow.first() ?: return
+    prefs.saveSession(current.copy(backendUrl = normalized))
+  }
+
+  suspend fun disableServiceInSession(module: TeacherModule) {
+    val current = prefs.sessionFlow.first() ?: return
+    val filtered = current.allowedModuleKeys.filterNot {
+      TeacherModule.fromKey(it) == module
+    }
+    prefs.saveSession(current.copy(allowedModuleKeys = filtered))
+  }
+
+  suspend fun markMustChangeLogin() {
+    val current = prefs.sessionFlow.first() ?: return
+    if (!current.mustChangePassword) {
+      prefs.saveSession(current.copy(mustChangePassword = true))
+    }
+  }
+
+  // --- Remote Fetching for Active Stream / Class ---
+
+  suspend fun fetchDashboard(stream: String): Result<DashboardSummary> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getDashboard(stream))
+    BackendApiParser.parseDashboard(raw, stream)
+  }
+
+  suspend fun fetchLearners(stream: String): Result<List<Learner>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getLearners(stream))
+    val learners = BackendApiParser.parseLearners(raw, stream)
+    db.learnerDao().deleteForStream(stream)
+    if (learners.isNotEmpty()) {
+      db.learnerDao().upsertAll(learners.map { it.toEntity() })
+    }
+    learners
+  }
+
+  suspend fun fetchAttendance(stream: String, day: String): Result<List<AttendanceRecord>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getAttendance(stream, day))
+    val parsed = BackendApiParser.parseAttendance(raw, stream, day)
+    val learnersById = db.learnerDao().observeAll().first().associateBy { it.id }
+    val enriched = parsed.map { rec ->
+      val lrn = learnersById[rec.learnerId]
+      if (lrn != null) rec.copy(learnerName = lrn.fullName, admissionNo = lrn.admissionNo) else rec
+    }
+    db.attendanceDao().deleteForStreamDay(stream, day)
+    if (enriched.isNotEmpty()) {
+      db.attendanceDao().upsertAll(enriched.map { it.toEntity() })
+    }
+    enriched
+  }
+
+  suspend fun fetchMarks(stream: String): Result<List<MarkEntry>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getMarks(stream))
+    val parsed = BackendApiParser.parseMarks(raw, stream, session.currentTerm)
+    val learnersById = db.learnerDao().observeAll().first().associateBy { it.id }
+    val enriched = parsed.map { m ->
+      val lrn = learnersById[m.learnerId]
+      if (lrn != null) m.copy(learnerName = lrn.fullName, admissionNo = lrn.admissionNo) else m
+    }
+    db.markEntryDao().deleteForStream(stream)
+    if (enriched.isNotEmpty()) {
+      db.markEntryDao().upsertAll(enriched.map { it.toEntity() })
+    }
+    enriched
+  }
+
+  suspend fun fetchObservations(stream: String, day: String? = null): Result<List<ObservationNote>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getObservations(stream, day))
+    val parsed = BackendApiParser.parseObservations(raw, stream, day ?: todayIso())
+    val learnersById = db.learnerDao().observeAll().first().associateBy { it.id }
+    val enriched = parsed.map { obs ->
+      val lrn = learnersById[obs.learnerId]
+      if (lrn != null) obs.copy(learnerName = lrn.fullName) else obs
+    }
+    if (day == null) {
+      db.observationDao().deleteAll()
+    }
+    if (enriched.isNotEmpty()) {
+      db.observationDao().upsertAll(enriched.map { it.toEntity() })
+    }
+    enriched
+  }
+
+  suspend fun fetchSchemes(stream: String, subjectId: String? = null, term: String? = null): Result<List<SchemeOfWork>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getSchemes(stream, subjectId, term))
+    val parsed = BackendApiParser.parseSchemes(raw, stream, session.schoolName, session.fullName, term ?: session.currentTerm)
+    if (subjectId == null && term == null) {
+      db.schemeDao().deleteAll()
+    }
+    if (parsed.isNotEmpty()) {
+      db.schemeDao().upsertAll(parsed.map { it.toEntity() })
+    }
+    parsed
+  }
+
+  suspend fun fetchLessonPlans(fallbackStream: String): Result<Pair<List<LessonPlanTemplateSection>, List<LessonPlan>>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getLessonPlans())
+    val (template, plans) = BackendApiParser.parseLessonPlans(raw, session.schoolName, session.fullName, fallbackStream)
+    db.lessonPlanDao().deleteAll()
+    if (plans.isNotEmpty()) {
+      db.lessonPlanDao().upsertAll(plans.map { it.toEntity() })
+    }
+    template to plans
+  }
+
+  suspend fun fetchRecordWork(stream: String): Result<List<RecordOfWork>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getRecordWork(stream))
+    val parsed = BackendApiParser.parseRecordWork(raw, stream, session.schoolName, session.fullName, session.currentTerm)
+    db.recordOfWorkDao().deleteAll()
+    if (parsed.isNotEmpty()) {
+      db.recordOfWorkDao().upsertAll(parsed.map { it.toEntity() })
+    }
+    parsed
+  }
+
+  suspend fun fetchProgress(stream: String): Result<List<LearnerProgressEntry>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getProgress(stream))
+    val parsed = BackendApiParser.parseProgress(raw, stream)
+    db.learnerProgressDao().deleteAll()
+    if (parsed.isNotEmpty()) {
+      db.learnerProgressDao().upsertAll(parsed.map { it.toEntity() })
+    }
+    parsed
+  }
+
+  suspend fun fetchTimetable(): Result<List<TimetableSlot>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getTimetable())
+    val slots = BackendApiParser.parseTimetable(raw)
+    if (slots.isNotEmpty()) {
+      db.timetableDao().deleteAll()
+      db.timetableDao().upsertAll(slots.map { it.toEntity() })
+    }
+    slots
+  }
+
+  suspend fun fetchKicdAndResources(
+    grade: String,
+    subjectId: String,
+  ): Result<Pair<List<KicdDesignItem>, List<ApprovedResource>>> = runCatching {
+    val key = grade to subjectId
+    kicdCache[key]?.let { return@runCatching it }
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val subjectName = KicdCurriculumRepository.areaNameForSubjectId(subjectId)
+    val kicdRaw = BackendApiParser.unwrapOrThrow(api.getKicd(grade, subjectId))
+    val designs = BackendApiParser.parseKicdDesigns(kicdRaw, grade, subjectName)
+    val resourcesRaw = runCatching { BackendApiParser.unwrapOrThrow(api.getResources(grade, subjectId)) }.getOrDefault("")
+    val resources = if (resourcesRaw.isNotBlank()) BackendApiParser.parseResources(resourcesRaw, grade, subjectName) else emptyList()
+    val pair = designs to resources
+    kicdCache[key] = pair
+    pair
+  }
+
+  suspend fun fetchPayments(stream: String): Result<List<FeePaymentRecord>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getPayments(stream))
+    BackendApiParser.parsePayments(raw)
+  }
+
+  suspend fun fetchWhatsApp(learnerId: String? = null): Result<List<GuardianMessage>> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(api.getWhatsApp(learnerId))
+    val msgs = BackendApiParser.parseWhatsAppMessages(raw)
+    if (msgs.isNotEmpty()) {
+      db.guardianMessageDao().upsertAll(msgs.map { it.toEntity() })
+    }
+    msgs
+  }
+
+  suspend fun fetchBroadsheetCsv(stream: String): Result<String> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
+    val api = apiFor(session)
+    BackendApiParser.unwrapOrThrow(api.getBroadsheetCsv(stream))
+  }
+
+  /**
+   * Syncs all permitted modules for the active stream from the live backend API.
+   */
+  suspend fun refreshAllForStream(
+    stream: String,
+    day: String = todayIso(),
+  ): Result<DashboardSummary?> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active teacher session")
+    if (session.authToken.isBlank()) {
       ensureTimetableSeeded()
       prefs.updateLastSyncedAt(System.currentTimeMillis())
-      return@runCatching "Everything is synced (Local workspace)"
+      return@runCatching null
     }
-    val api = NetworkModule.createService(session.backendUrl, session.authToken)
+    val allowed = session.allowedModules
+    val needsRoster = TeacherModule.LEARNERS in allowed ||
+      TeacherModule.ATTENDANCE in allowed ||
+      TeacherModule.MARKSBOOK in allowed ||
+      TeacherModule.OBSERVATIONS in allowed ||
+      TeacherModule.PROGRESS in allowed ||
+      TeacherModule.REPORT_CARDS in allowed ||
+      TeacherModule.BROADSHEET in allowed ||
+      TeacherModule.FEE_PAYMENTS in allowed ||
+      TeacherModule.WHATSAPP in allowed
 
-    val unsyncedSchemes = db.schemeDao().getUnsynced()
-    if (unsyncedSchemes.isNotEmpty() && api.pushSchemes(unsyncedSchemes.map { it.toDto() }).isSuccessful) {
-      db.schemeDao().upsertAll(unsyncedSchemes.map { it.copy(synced = true) })
-    }
-    val unsyncedPlans = db.lessonPlanDao().getUnsynced()
-    if (unsyncedPlans.isNotEmpty() && api.pushLessonPlans(unsyncedPlans.map { it.toDto() }).isSuccessful) {
-      db.lessonPlanDao().upsertAll(unsyncedPlans.map { it.copy(synced = true) })
-    }
-    val unsyncedRecords = db.recordOfWorkDao().getUnsynced()
-    if (unsyncedRecords.isNotEmpty() && api.pushRecordsOfWork(unsyncedRecords.map { it.toDto() }).isSuccessful) {
-      db.recordOfWorkDao().upsertAll(unsyncedRecords.map { it.copy(synced = true) })
-    }
-    val unsyncedAttendance = db.attendanceDao().getUnsynced()
-    if (unsyncedAttendance.isNotEmpty() && api.pushAttendance(unsyncedAttendance.map { it.toDto() }).isSuccessful) {
-      db.attendanceDao().upsertAll(unsyncedAttendance.map { it.copy(synced = true) })
-    }
-    val unsyncedMarks = db.markEntryDao().getUnsynced()
-    if (unsyncedMarks.isNotEmpty() && api.pushMarks(unsyncedMarks.map { it.toDto() }).isSuccessful) {
-      db.markEntryDao().upsertAll(unsyncedMarks.map { it.copy(synced = true) })
-    }
-    val unsyncedObs = db.observationDao().getUnsynced()
-    if (unsyncedObs.isNotEmpty() && api.pushObservations(unsyncedObs.map { it.toDto() }).isSuccessful) {
-      db.observationDao().upsertAll(unsyncedObs.map { it.copy(synced = true) })
+    if (needsRoster) {
+      fetchLearners(stream).handleModuleError(TeacherModule.LEARNERS)
     }
 
-    val bootstrapRes = api.fetchBootstrap()
-    if (!bootstrapRes.isSuccessful) {
-      throw IllegalStateException("Sync failed: HTTP ${bootstrapRes.code()}")
-    }
-    val bootstrap: TeacherBootstrapDto = bootstrapRes.body()
-      ?: throw IllegalStateException("Empty bootstrap payload")
+    val summary = if (TeacherModule.DASHBOARD in allowed) {
+      fetchDashboard(stream).handleModuleError(TeacherModule.DASHBOARD)
+    } else null
 
-    val updatedSession = session.copy(
-      fullName = bootstrap.teacher.fullName,
-      schoolName = bootstrap.teacher.schoolName,
-      currentTerm = bootstrap.teacher.currentTerm,
-      currentYear = bootstrap.teacher.currentYear,
-      badgeLabel = bootstrap.teacher.badgeLabel,
-      allowedModuleKeys = bootstrap.teacher.allowedModules.ifEmpty { session.allowedModuleKeys },
-      allocatedClasses = bootstrap.teacher.allocatedClasses.map {
-        AllocatedClass(it.id, it.grade, it.stream, it.learningAreas, it.learnerCount)
-      },
-    )
-    prefs.saveSession(updatedSession)
-
-    if (bootstrap.learners.isNotEmpty()) {
-      db.learnerDao().upsertAll(bootstrap.learners.map {
-        LearnerEntity(
-          id = it.id,
-          admissionNo = it.admissionNo,
-          nemisUpi = "NEM-${it.admissionNo.takeLast(4)}",
-          fullName = it.fullName,
-          grade = it.grade,
-          stream = it.stream,
-          gender = it.gender,
-          guardianPhone = it.guardianPhone,
-          pathwayInterest = it.pathwayInterest,
-          totalFeeKes = 45000.0,
-          feeBalanceKes = it.feeBalanceKes,
-          attendanceHistory5Days = "PPPPP",
-          termAttendancePct = 95,
-        )
-      })
+    if (TeacherModule.ATTENDANCE in allowed) {
+      fetchAttendance(stream, day).handleModuleError(TeacherModule.ATTENDANCE)
     }
-    if (bootstrap.timetable.isNotEmpty()) {
-      db.timetableDao().upsertAll(bootstrap.timetable.map {
-        TimetableSlotEntity(it.id, it.grade, it.dayOfWeek, it.slotIndex, it.timeRange, it.learningArea, it.isBreak, it.room, it.teacherId)
-      })
+    if (TeacherModule.MARKSBOOK in allowed || TeacherModule.REPORT_CARDS in allowed || TeacherModule.BROADSHEET in allowed || TeacherModule.PATHWAYS in allowed) {
+      fetchMarks(stream).handleModuleError(TeacherModule.MARKSBOOK)
     }
-    if (bootstrap.marks.isNotEmpty()) {
-      db.markEntryDao().upsertAll(bootstrap.marks.map {
-        MarkEntryEntity(
-          id = it.id,
-          learnerId = it.learnerId,
-          learnerName = it.learnerName,
-          admissionNo = it.admissionNo,
-          grade = it.grade,
-          stream = it.stream,
-          learningArea = it.learningArea,
-          term = it.term,
-          assessmentType = it.assessmentType,
-          score = it.score,
-          maxScore = it.maxScore,
-          levelCode = CbcPerformanceLevel.fromScore(it.score).code,
-          teacherComment = it.teacherComment,
-          updatedAt = System.currentTimeMillis(),
-          synced = true,
-        )
-      })
+    if (TeacherModule.OBSERVATIONS in allowed) {
+      fetchObservations(stream, day).handleModuleError(TeacherModule.OBSERVATIONS)
     }
-    if (bootstrap.attendance.isNotEmpty()) {
-      db.attendanceDao().upsertAll(bootstrap.attendance.map {
-        AttendanceEntity(it.id, it.date, it.grade, it.stream, it.learningArea, it.lessonSlot, it.learnerId, it.learnerName, it.admissionNo, it.status, it.remarks, true)
-      })
+    if (TeacherModule.SCHEMES in allowed) {
+      fetchSchemes(stream).handleModuleError(TeacherModule.SCHEMES)
     }
-    if (bootstrap.schemes.isNotEmpty()) {
-      db.schemeDao().upsertAll(bootstrap.schemes.map {
-        SchemeEntity(it.id, it.title, it.schoolName, it.teacherName, it.grade, it.learningArea, it.term, it.year, it.rowsJson, it.updatedAt, true)
-      })
+    if (TeacherModule.RECORD_OF_WORK in allowed) {
+      fetchRecordWork(stream).handleModuleError(TeacherModule.RECORD_OF_WORK)
     }
-    if (bootstrap.lessonPlans.isNotEmpty()) {
-      db.lessonPlanDao().upsertAll(bootstrap.lessonPlans.map {
-        LessonPlanEntity(
-          it.id, it.schoolName, it.teacherName, it.grade, it.stream, it.learningArea, it.term, it.week, it.lessonNumber, it.date, it.timeSlot, it.rollCount,
-          it.strand, it.subStrand, it.subStrand, it.specificOutcomes, it.keyInquiryQuestions, it.coreCompetencies, it.values, it.pcis, it.learningResources,
-          "Pair and small group work", it.introduction, it.lessonDevelopment, it.conclusion, it.extendedActivity, it.reflection, it.updatedAt, true,
-        )
-      })
+    if (TeacherModule.PROGRESS in allowed) {
+      fetchProgress(stream).handleModuleError(TeacherModule.PROGRESS)
     }
-    if (bootstrap.recordsOfWork.isNotEmpty()) {
-      db.recordOfWorkDao().upsertAll(bootstrap.recordsOfWork.map {
-        RecordOfWorkEntity(
-          it.id, it.schoolName, it.teacherName, it.grade, it.stream, it.learningArea, it.term, it.year, it.week, it.date, it.strand, it.subStrand,
-          it.workCovered, "", "", it.challengesRemarks, it.teacherInitials, it.updatedAt, true,
-        )
-      })
+    if (TeacherModule.TIMETABLE in allowed) {
+      fetchTimetable().handleModuleError(TeacherModule.TIMETABLE)
     }
-    if (bootstrap.observations.isNotEmpty()) {
-      db.observationDao().upsertAll(bootstrap.observations.map {
-        ObservationEntity(it.id, it.learnerId, it.learnerName, it.grade, "Strength", it.competency, it.ratingCode, it.note, it.date, true)
-      })
-    }
-
     prefs.updateLastSyncedAt(System.currentTimeMillis())
-    "Synced with ElimuTrack backend"
+    summary
   }
 
-  suspend fun updateModulePermissions(moduleKeys: List<String>) {
-    val current = prefs.sessionFlow.first() ?: return
-    prefs.saveSession(current.copy(allowedModuleKeys = moduleKeys))
+  private suspend fun <T> Result<T>.handleModuleError(module: TeacherModule): T? {
+    val err = exceptionOrNull()
+    if (err is ApiException) {
+      when {
+        err.httpCode == 401 || err.code == "UNAUTHENTICATED" -> {
+          clearSessionAndData()
+          throw err
+        }
+        err.code == "MUST_CHANGE_LOGIN" -> {
+          val cur = prefs.sessionFlow.first()
+          if (cur != null) prefs.saveSession(cur.copy(mustChangePassword = true))
+          throw err
+        }
+        err.code == "SERVICE_DENIED" -> {
+          disableServiceInSession(module)
+          return null
+        }
+      }
+    }
+    return getOrNull()
   }
 
-  suspend fun updateAllocatedClasses(classes: List<AllocatedClass>) {
-    val current = prefs.sessionFlow.first() ?: return
-    prefs.saveSession(current.copy(allocatedClasses = classes))
+  // --- Remote Write Operations Matching TEACHER_API ---
+
+  suspend fun createLearnerRemote(
+    admissionNo: String,
+    nemisUpi: String,
+    fullName: String,
+    gradeLevel: String,
+    stream: String,
+    gender: String,
+    guardianPhone: String,
+  ): Result<Learner> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    val raw = BackendApiParser.unwrapOrThrow(
+      api.createLearner(
+        LearnerCreateRequestDto(
+          name = fullName.trim(),
+          admissionNo = admissionNo.trim(),
+          stream = stream,
+          gradeLevel = gradeLevel,
+          gender = gender,
+          nemisUpi = nemisUpi.trim(),
+          guardianPhone = guardianPhone.trim(),
+        )
+      )
+    )
+    val created = BackendApiParser.parseCreatedLearner(raw, stream)
+      ?: Learner(
+        id = "lrn_${System.currentTimeMillis()}",
+        admissionNo = admissionNo.trim(),
+        nemisUpi = nemisUpi.trim(),
+        fullName = fullName.trim(),
+        grade = gradeLevel,
+        stream = stream,
+        gender = gender,
+        guardianPhone = guardianPhone.trim(),
+      )
+    db.learnerDao().upsert(created.toEntity())
+    created
   }
 
-  suspend fun updateLoginCredentials(username: String, mustChangePassword: Boolean) {
-    val current = prefs.sessionFlow.first() ?: return
-    prefs.saveSession(current.copy(username = username, mustChangePassword = mustChangePassword))
+  suspend fun submitAttendanceRemote(
+    stream: String,
+    day: String,
+    items: List<AttendanceRecord>,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    val payload = AttendancePostRequestDto(
+      items = items.map { rec ->
+        val st = when (rec.status) {
+          AttendanceStatus.PRESENT -> "present"
+          AttendanceStatus.ABSENT -> "absent"
+          AttendanceStatus.LATE -> "late"
+          AttendanceStatus.EXCUSED -> "absent"
+        }
+        AttendancePostItemDto(learnerId = rec.learnerId, day = day, status = st)
+      }
+    )
+    BackendApiParser.unwrapOrThrow(api.postAttendance(payload))
+    db.attendanceDao().upsertAll(items.map { it.copy(synced = true).toEntity() })
   }
+
+  suspend fun submitMarksRemote(
+    stream: String,
+    subjectId: String,
+    entries: List<MarkEntry>,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    val payload = MarksPutRequestDto(
+      items = entries.map { MarkPutItemDto(learnerId = it.learnerId, subjectId = subjectId, score = it.score) }
+    )
+    BackendApiParser.unwrapOrThrow(api.putMarks(payload))
+    db.markEntryDao().upsertAll(entries.map { it.copy(synced = true).toEntity() })
+  }
+
+  suspend fun submitObservationRemote(
+    learner: Learner,
+    day: String,
+    note: String,
+    localRecord: ObservationNote,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    val payload = ObservationPostRequestDto(
+      items = listOf(ObservationPostItemDto(learnerId = learner.id, day = day, note = note))
+    )
+    BackendApiParser.unwrapOrThrow(api.postObservations(payload))
+    db.observationDao().upsert(localRecord.copy(synced = true).toEntity())
+  }
+
+  suspend fun saveSchemesBulkRemote(
+    stream: String,
+    grade: String,
+    subjectId: String,
+    term: String,
+    rows: List<SchemeRow>,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    if (rows.size == 1 && rows.first().remoteId != null) {
+      val r = rows.first()
+      BackendApiParser.unwrapOrThrow(
+        api.updateSchemeRow(
+          SchemeRowApiDto(
+            id = r.remoteId,
+            stream = stream,
+            subjectId = subjectId,
+            term = term,
+            week = r.week,
+            lesson = r.lesson,
+            strand = r.strand,
+            subStrand = r.subStrand,
+            outcomes = r.specificOutcomes,
+            experiences = r.learningExperiences,
+            inquiry = r.keyInquiryQuestion,
+            resources = r.learningResources,
+            assessment = r.assessmentMethods,
+            remarks = r.reflection,
+          )
+        )
+      )
+    } else if (rows.size == 1 && rows.first().remoteId == null) {
+      val r = rows.first()
+      BackendApiParser.unwrapOrThrow(
+        api.createSchemeRow(
+          SchemeRowApiDto(
+            stream = stream,
+            subjectId = subjectId,
+            term = term,
+            week = r.week,
+            lesson = r.lesson,
+            strand = r.strand,
+            subStrand = r.subStrand,
+            outcomes = r.specificOutcomes,
+            experiences = r.learningExperiences,
+            inquiry = r.keyInquiryQuestion,
+            resources = r.learningResources,
+            assessment = r.assessmentMethods,
+            remarks = r.reflection,
+          )
+        )
+      )
+    } else {
+      BackendApiParser.unwrapOrThrow(
+        api.createSchemesBulk(
+          SchemeBulkRequestDto(
+            stream = stream,
+            subjectId = subjectId,
+            term = term,
+            rows = rows.map { r ->
+              SchemeBulkRowDto(
+                week = r.week,
+                lesson = r.lesson,
+                strand = r.strand,
+                subStrand = r.subStrand,
+                outcomes = r.specificOutcomes,
+                experiences = r.learningExperiences,
+                inquiry = r.keyInquiryQuestion,
+                resources = r.learningResources,
+                assessment = r.assessmentMethods,
+                remarks = r.reflection,
+              )
+            },
+          )
+        )
+      )
+    }
+    fetchSchemes(stream, subjectId, term)
+  }
+
+  suspend fun deleteSchemeRemote(scheme: SchemeOfWork): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    for (row in scheme.rows) {
+      val rid = row.remoteId ?: continue
+      BackendApiParser.unwrapOrThrow(api.deleteSchemeRow(DeleteIdRequestDto(rid)))
+    }
+    db.schemeDao().deleteById(scheme.id)
+  }
+
+  suspend fun saveLessonPlanRemote(
+    plan: LessonPlan,
+    isUpdate: Boolean,
+    contentMap: Map<String, String>,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    val subjectId = KicdCurriculumRepository.subjectIdForArea(plan.grade, plan.learningArea)
+    val req = LessonPlanApiRequestDto(
+      id = if (isUpdate) plan.id else null,
+      stream = plan.stream,
+      subjectId = subjectId,
+      lessonDate = plan.date.ifBlank { todayIso() },
+      topic = plan.topic.ifBlank { plan.subStrand },
+      subStrand = plan.subStrand.ifBlank { plan.topic },
+      schemeId = null,
+      term = plan.term,
+      week = plan.week,
+      lesson = plan.lessonNumber,
+      strand = plan.strand.ifBlank { plan.topic },
+      content = contentMap,
+    )
+    if (isUpdate) {
+      BackendApiParser.unwrapOrThrow(api.updateLessonPlan(req))
+    } else {
+      BackendApiParser.unwrapOrThrow(api.createLessonPlan(req))
+    }
+    fetchLessonPlans(plan.stream)
+  }
+
+  suspend fun deleteLessonPlanRemote(id: String): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    BackendApiParser.unwrapOrThrow(api.deleteLessonPlan(DeleteIdRequestDto(id)))
+    db.lessonPlanDao().deleteById(id)
+  }
+
+  suspend fun saveRecordWorkRemote(
+    record: RecordOfWork,
+    isUpdate: Boolean,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    val subjectId = KicdCurriculumRepository.subjectIdForArea(record.grade, record.learningArea)
+    val req = RecordWorkApiDto(
+      id = if (isUpdate) record.id else null,
+      stream = record.stream,
+      subjectId = subjectId,
+      day = record.date.ifBlank { todayIso() },
+      topic = record.topic.ifBlank { record.subStrand.ifBlank { record.strand } },
+      term = record.term,
+      strand = record.strand,
+      subStrand = record.subStrand,
+      workCovered = record.workCovered,
+      schemeId = record.schemeId.ifBlank { null },
+      lessonPlanId = record.lessonPlanId.ifBlank { null },
+      week = record.week,
+      lesson = record.lessonNumber,
+      classSize = record.classSize,
+      absences = record.absencesToday,
+      homework = record.homework,
+      remarks = record.challengesRemarks,
+    )
+    if (isUpdate) {
+      BackendApiParser.unwrapOrThrow(api.updateRecordWork(req))
+    } else {
+      BackendApiParser.unwrapOrThrow(api.createRecordWork(req))
+    }
+    fetchRecordWork(record.stream)
+  }
+
+  suspend fun deleteRecordWorkRemote(id: String): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    BackendApiParser.unwrapOrThrow(api.deleteRecordWork(DeleteIdRequestDto(id)))
+    db.recordOfWorkDao().deleteById(id)
+  }
+
+  suspend fun saveProgressRemote(
+    learner: Learner,
+    day: String,
+    stage: String,
+    note: String,
+    learningArea: String,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    val subjectId = KicdCurriculumRepository.subjectIdForArea(learner.grade, learningArea)
+    BackendApiParser.unwrapOrThrow(
+      api.createProgress(
+        ProgressPostRequestDto(
+          learnerId = learner.id,
+          day = day,
+          stage = stage,
+          note = note.trim().ifBlank { null },
+          subjectId = subjectId,
+        )
+      )
+    )
+    fetchProgress(learner.stream)
+  }
+
+  suspend fun deleteProgressRemote(id: String): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    BackendApiParser.unwrapOrThrow(api.deleteProgress(DeleteIdRequestDto(id)))
+    db.learnerProgressDao().deleteById(id)
+  }
+
+  suspend fun postFeePaymentRemote(
+    learner: Learner,
+    amount: Double,
+    method: String,
+    reference: String,
+    day: String,
+    note: String,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    BackendApiParser.unwrapOrThrow(
+      api.createPayment(
+        PaymentPostRequestDto(
+          learnerId = learner.id,
+          amount = amount,
+          method = method,
+          reference = reference,
+          day = day,
+          note = note.trim().ifBlank { null },
+        )
+      )
+    )
+    val updated = (learner.feeBalanceKes - amount).coerceAtLeast(0.0)
+    db.learnerDao().updateFeeBalance(learner.id, updated)
+  }
+
+  suspend fun postWhatsAppRemote(
+    learner: Learner,
+    message: String,
+  ): Result<Unit> = runCatching {
+    val session = prefs.sessionFlow.first() ?: throw IllegalStateException("Not signed in")
+    val api = apiFor(session)
+    BackendApiParser.unwrapOrThrow(
+      api.postWhatsApp(
+        WhatsAppPostRequestDto(
+          learnerId = learner.id,
+          message = message,
+        )
+      )
+    )
+    fetchWhatsApp(learner.id)
+  }
+
+  // --- Local Room helpers (preserved for unit testing & local caching) ---
 
   suspend fun setDarkMode(enabled: Boolean) = prefs.setDarkMode(enabled)
-
-  suspend fun logout() = prefs.clearSession()
 
   suspend fun saveScheme(scheme: SchemeOfWork) = db.schemeDao().upsert(scheme.toEntity())
   suspend fun deleteScheme(id: String) = db.schemeDao().deleteById(id)
@@ -393,19 +857,6 @@ class TeacherRepository(
     db.learnerDao().updateFeeBalance(learnerId, updated)
   }
 
-  suspend fun populateStarterClassRoster(grade: String, stream: String) {
-    val prefix = grade.filter { it.isDigit() }.ifBlank { "1" }
-    val starterLearners = listOf(
-      Learner("lrn_${prefix}_1", "ADM-41${prefix}0", "NEM-70${prefix}1", "Amina Mohamed", grade, stream, "Female", "+254712000101", "STEM", 45000.0, 0.0, "PPPPP", 100),
-      Learner("lrn_${prefix}_2", "ADM-41${prefix}1", "NEM-70${prefix}2", "Brian Otieno", grade, stream, "Male", "+254712097102", "STEM", 45000.0, 15000.0, "PPAPP", 92),
-      Learner("lrn_${prefix}_3", "ADM-41${prefix}2", "NEM-70${prefix}3", "Cynthia Wanjiru", grade, stream, "Female", "+254712194103", "Social Sciences", 45000.0, 0.0, "PPPAP", 96),
-      Learner("lrn_${prefix}_4", "ADM-41${prefix}3", "NEM-70${prefix}4", "Dennis Kiprop", grade, stream, "Male", "+254712291104", "Arts & Sports Science", 45000.0, 30000.0, "APAAP", 78),
-      Learner("lrn_${prefix}_5", "ADM-41${prefix}4", "NEM-70${prefix}5", "Esther Achieng", grade, stream, "Female", "+254712388105", "STEM", 45000.0, 0.0, "PPPPP", 100),
-      Learner("lrn_${prefix}_6", "ADM-41${prefix}5", "NEM-70${prefix}6", "Hassan Abdi", grade, stream, "Male", "+254712485106", "Social Sciences", 45000.0, 7000.0, "PAPPP", 88),
-    )
-    db.learnerDao().upsertAll(starterLearners.map { it.toEntity() })
-  }
-
   suspend fun saveAttendanceBatch(records: List<AttendanceRecord>) {
     db.attendanceDao().upsertAll(records.map { it.toEntity() })
   }
@@ -419,7 +870,7 @@ class TeacherRepository(
   suspend fun saveProgressEntry(entry: LearnerProgressEntry) = db.learnerProgressDao().upsert(entry.toEntity())
   suspend fun saveGuardianMessage(msg: GuardianMessage) = db.guardianMessageDao().upsert(msg.toEntity())
 
-  // Mapping Helpers
+  // --- Mapping Helpers ---
   private fun SchemeEntity.toDomain(): SchemeOfWork {
     val parsedRows = runCatching { rowsAdapter.fromJson(rowsJson) }.getOrNull().orEmpty()
     return SchemeOfWork(id, title, schoolName, teacherName, grade, learningArea, term, year, parsedRows, updatedAt, synced)
@@ -427,9 +878,6 @@ class TeacherRepository(
 
   private fun SchemeOfWork.toEntity(): SchemeEntity =
     SchemeEntity(id, title, schoolName, teacherName, grade, learningArea, term, year, rowsAdapter.toJson(rows), updatedAt, synced)
-
-  private fun SchemeEntity.toDto(): SchemeDto =
-    SchemeDto(id, title, schoolName, teacherName, grade, learningArea, term, year, rowsJson, updatedAt)
 
   private fun LessonPlanEntity.toDomain(): LessonPlan = LessonPlan(
     id, schoolName, teacherName, grade, stream, learningArea, term, week, lessonNumber, date, timeSlot, rollCount,
@@ -443,12 +891,6 @@ class TeacherRepository(
     learningResources, organizationOfLearning, introduction, lessonDevelopment, conclusion, extendedActivity, reflection, updatedAt, synced,
   )
 
-  private fun LessonPlanEntity.toDto(): LessonPlanDto = LessonPlanDto(
-    id, schoolName, teacherName, grade, stream, learningArea, term, week, lessonNumber, date, timeSlot, rollCount,
-    strand, subStrand, specificOutcomes, keyInquiryQuestions, coreCompetencies, valuesText, pcis,
-    learningResources, introduction, lessonDevelopment, conclusion, extendedActivity, reflection, updatedAt,
-  )
-
   private fun RecordOfWorkEntity.toDomain(): RecordOfWork = RecordOfWork(
     id, schoolName, teacherName, grade, stream, learningArea, term, year, week, date, strand, subStrand,
     workCovered, absencesToday, homework, challengesRemarks, teacherInitials, updatedAt, synced,
@@ -457,11 +899,6 @@ class TeacherRepository(
   private fun RecordOfWork.toEntity(): RecordOfWorkEntity = RecordOfWorkEntity(
     id, schoolName, teacherName, grade, stream, learningArea, term, year, week, date, strand, subStrand,
     workCovered, absencesToday, homework, challengesRemarks, teacherInitials, updatedAt, synced,
-  )
-
-  private fun RecordOfWorkEntity.toDto(): RecordOfWorkDto = RecordOfWorkDto(
-    id, schoolName, teacherName, grade, stream, learningArea, term, year, week, date, strand, subStrand,
-    workCovered, challengesRemarks, teacherInitials, updatedAt,
   )
 
   private fun LearnerEntity.toDomain(): Learner = Learner(
@@ -482,9 +919,6 @@ class TeacherRepository(
   private fun AttendanceRecord.toEntity(): AttendanceEntity =
     AttendanceEntity(id, date, grade, stream, learningArea, lessonSlot, learnerId, learnerName, admissionNo, status.name, remarks, synced)
 
-  private fun AttendanceEntity.toDto(): AttendanceDto =
-    AttendanceDto(id, date, grade, stream, learningArea, lessonSlot, learnerId, learnerName, admissionNo, statusName, remarks)
-
   private fun MarkEntryEntity.toDomain(): MarkEntry = MarkEntry(
     id, learnerId, learnerName, admissionNo, grade, stream, learningArea, term, assessmentType,
     score, maxScore, CbcPerformanceLevel.fromScore(score), teacherComment, updatedAt, synced,
@@ -495,9 +929,6 @@ class TeacherRepository(
     score, maxScore, CbcPerformanceLevel.fromScore(score).code, teacherComment, updatedAt, synced,
   )
 
-  private fun MarkEntryEntity.toDto(): MarkEntryDto =
-    MarkEntryDto(id, learnerId, learnerName, admissionNo, grade, stream, learningArea, term, assessmentType, score, maxScore, teacherComment)
-
   private fun ObservationEntity.toDomain(): ObservationNote = ObservationNote(
     id, learnerId, learnerName, grade, observationType, competency,
     CbcPerformanceLevel.entries.firstOrNull { it.code == ratingCode } ?: CbcPerformanceLevel.ME, note, date, synced,
@@ -505,9 +936,6 @@ class TeacherRepository(
 
   private fun ObservationNote.toEntity(): ObservationEntity =
     ObservationEntity(id, learnerId, learnerName, grade, observationType, competency, rating.code, note, date, synced)
-
-  private fun ObservationEntity.toDto(): ObservationDto =
-    ObservationDto(id, learnerId, learnerName, grade, competency, ratingCode, note, date)
 
   private fun LearnerProgressEntity.toDomain(): LearnerProgressEntry =
     LearnerProgressEntry(id, learnerId, learnerName, grade, learningArea, stage, note, date, synced)

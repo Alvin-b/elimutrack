@@ -33,6 +33,7 @@ data class SchemeRow(
   val learningResources: String,
   val assessmentMethods: String,
   val reflection: String = "",
+  val remoteId: String? = null,
 )
 
 data class SchemeOfWork(
@@ -47,6 +48,11 @@ data class SchemeOfWork(
   val rows: List<SchemeRow>,
   val updatedAt: Long,
   val synced: Boolean = false,
+)
+
+data class LessonPlanTemplateSection(
+  val key: String,
+  val label: String,
 )
 
 data class LessonPlan(
@@ -79,6 +85,7 @@ data class LessonPlan(
   val reflection: String,
   val updatedAt: Long,
   val synced: Boolean = false,
+  val extraContent: Map<String, String> = emptyMap(),
 )
 
 data class RecordOfWork(
@@ -101,6 +108,11 @@ data class RecordOfWork(
   val teacherInitials: String,
   val updatedAt: Long,
   val synced: Boolean = false,
+  val topic: String = subStrand,
+  val lessonNumber: Int = 1,
+  val classSize: Int = 0,
+  val schemeId: String = "",
+  val lessonPlanId: String = "",
 )
 
 data class TimetableSlot(
@@ -201,6 +213,17 @@ data class GuardianMessage(
   val synced: Boolean = false,
 )
 
+data class FeePaymentRecord(
+  val id: String,
+  val learnerId: String,
+  val learnerName: String,
+  val amount: Double,
+  val method: String,
+  val reference: String,
+  val day: String,
+  val note: String = "",
+)
+
 data class ApprovedResource(
   val id: String,
   val title: String,
@@ -209,6 +232,11 @@ data class ApprovedResource(
   val learningArea: String,
   val resourceType: String,
   val kicdApprovalCode: String,
+)
+
+data class SubjectInfo(
+  val id: String,
+  val name: String,
 )
 
 data class PathwayInfo(
