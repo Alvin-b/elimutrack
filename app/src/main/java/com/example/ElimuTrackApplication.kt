@@ -1,10 +1,15 @@
 package com.example
 
 import android.app.Application
+import com.example.data.curriculum.BundledCurriculum
 import com.example.data.local.ElimuTrackDatabase
 import com.example.data.local.SessionPreferences
 import com.example.data.repository.TeacherRepository
 import com.example.pdf.PdfExportManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class ElimuTrackApplication : Application() {
   lateinit var database: ElimuTrackDatabase
@@ -25,5 +30,9 @@ class ElimuTrackApplication : Application() {
     sessionPreferences = SessionPreferences(this)
     repository = TeacherRepository(database, sessionPreferences)
     pdfExportManager = PdfExportManager(this)
+    BundledCurriculum.start(this)
+    CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+      repository.ensureLessonPlanTemplateSeeded()
+    }
   }
 }

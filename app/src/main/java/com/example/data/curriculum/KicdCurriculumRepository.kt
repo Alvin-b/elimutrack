@@ -17,6 +17,9 @@ object KicdCurriculumRepository {
     "Grade 7", "Grade 8", "Grade 9",
   )
 
+  /** Grades with bundled curriculum templates. Timetables remain Grade 1-9. */
+  val curriculumGrades: List<String> = listOf("Pre-Primary 1", "Pre-Primary 2") + cbcGrades
+
   val cbcCoreCompetencies: List<String> = listOf(
     "Communication and Collaboration",
     "Critical Thinking and Problem Solving",
@@ -64,30 +67,73 @@ object KicdCurriculumRepository {
     ),
   )
 
-  val primarySubjects: List<com.example.domain.model.SubjectInfo> = listOf(
+  private val prePrimarySubjects: List<com.example.domain.model.SubjectInfo> = listOf(
     com.example.domain.model.SubjectInfo("math_p", "Mathematics"),
-    com.example.domain.model.SubjectInfo("eng_p", "English"),
+    com.example.domain.model.SubjectInfo("eng_p", "English Language"),
     com.example.domain.model.SubjectInfo("kis_p", "Kiswahili"),
     com.example.domain.model.SubjectInfo("env_p", "Environmental Activities"),
+    com.example.domain.model.SubjectInfo("crt_p", "Creative Arts"),
     com.example.domain.model.SubjectInfo("rel_p", "Religious Education"),
-    com.example.domain.model.SubjectInfo("crt_p", "Creative Activities"),
   )
 
-  val jssSubjects: List<com.example.domain.model.SubjectInfo> = listOf(
+  private val lowerPrimarySubjects: List<com.example.domain.model.SubjectInfo> = listOf(
+    com.example.domain.model.SubjectInfo("math_p", "Mathematics"),
+    com.example.domain.model.SubjectInfo("eng_p", "English Language"),
+    com.example.domain.model.SubjectInfo("kis_p", "Kiswahili"),
+    com.example.domain.model.SubjectInfo("indig_p", "Indigenous Languages"),
+    com.example.domain.model.SubjectInfo("env_p", "Environmental Activities"),
+    com.example.domain.model.SubjectInfo("crt_p", "Creative Arts"),
+    com.example.domain.model.SubjectInfo("rel_p", "Religious Education"),
+  )
+
+  private val upperPrimarySubjects: List<com.example.domain.model.SubjectInfo> = listOf(
+    com.example.domain.model.SubjectInfo("math_p", "Mathematics"),
+    com.example.domain.model.SubjectInfo("eng_p", "English Language"),
+    com.example.domain.model.SubjectInfo("kis_p", "Kiswahili"),
+    com.example.domain.model.SubjectInfo("indig_p", "Indigenous Languages"),
+    com.example.domain.model.SubjectInfo("env_p", "Environmental Activities"),
+    com.example.domain.model.SubjectInfo("sost", "Social Studies"),
+    com.example.domain.model.SubjectInfo("agri", "Agriculture & Nutrition"),
+    com.example.domain.model.SubjectInfo("crt_p", "Creative Arts"),
+    com.example.domain.model.SubjectInfo("rel_p", "Religious Education"),
+  )
+
+  private val juniorSubjects: List<com.example.domain.model.SubjectInfo> = listOf(
     com.example.domain.model.SubjectInfo("eng", "English"),
     com.example.domain.model.SubjectInfo("kis", "Kiswahili"),
     com.example.domain.model.SubjectInfo("math", "Mathematics"),
     com.example.domain.model.SubjectInfo("isci", "Integrated Science"),
     com.example.domain.model.SubjectInfo("sost", "Social Studies"),
-    com.example.domain.model.SubjectInfo("agri", "Agriculture"),
+    com.example.domain.model.SubjectInfo("agri", "Agriculture & Nutrition"),
     com.example.domain.model.SubjectInfo("ptech", "Pre-Technical Studies"),
-    com.example.domain.model.SubjectInfo("arts", "Creative Arts"),
+    com.example.domain.model.SubjectInfo("arts", "Creative Arts & Sports"),
     com.example.domain.model.SubjectInfo("reled", "Religious Education"),
   )
 
+  private val languageSubjects: List<com.example.domain.model.SubjectInfo> = listOf(
+    com.example.domain.model.SubjectInfo("arabic", "Arabic"),
+    com.example.domain.model.SubjectInfo("chinese", "Mandarin Chinese"),
+    com.example.domain.model.SubjectInfo("french", "French"),
+  )
+
+  val primarySubjects: List<com.example.domain.model.SubjectInfo> =
+    (prePrimarySubjects + lowerPrimarySubjects + upperPrimarySubjects + languageSubjects)
+      .distinctBy { it.id }
+
+  val jssSubjects: List<com.example.domain.model.SubjectInfo> =
+    (juniorSubjects + languageSubjects).distinctBy { it.id }
+
   fun subjectsForGrade(grade: String): List<com.example.domain.model.SubjectInfo> {
+    if (grade.startsWith("Pre-Primary", ignoreCase = true)) return prePrimarySubjects
     val gNum = grade.filter { it.isDigit() }.toIntOrNull() ?: 7
-    return if (gNum in 1..6) primarySubjects else jssSubjects
+    return when {
+      gNum in 1..3 -> lowerPrimarySubjects
+      gNum == 4 -> upperPrimarySubjects + languageSubjects.first { it.id == "arabic" }
+      gNum in 5..6 -> upperPrimarySubjects
+      gNum == 8 -> juniorSubjects + languageSubjects.first { it.id == "chinese" }
+      gNum == 9 -> juniorSubjects + languageSubjects.first { it.id == "french" }
+      else -> juniorSubjects
+    }
   }
 
   fun subjectIdForArea(grade: String, areaOrId: String): String {
@@ -102,7 +148,13 @@ object KicdCurriculumRepository {
         lower.contains("math") -> "math_p"
         lower.contains("eng") || lower.contains("literacy") -> "eng_p"
         lower.contains("kis") -> "kis_p"
-        lower.contains("env") || lower.contains("sci") || lower.contains("agri") -> "env_p"
+        lower.contains("indig") -> "indig_p"
+        lower.contains("arab") -> "arabic"
+        lower.contains("chinese") || lower.contains("mandarin") -> "chinese"
+        lower.contains("french") -> "french"
+        lower.contains("agri") -> if (gNum >= 4) "agri" else "env_p"
+        lower.contains("env") || lower.contains("sci") -> "env_p"
+        lower.contains("soc") -> "sost"
         lower.contains("rel") || lower.contains("cre") || lower.contains("ire") -> "rel_p"
         lower.contains("creativ") || lower.contains("art") || lower.contains("music") -> "crt_p"
         else -> "math_p"
@@ -115,12 +167,24 @@ object KicdCurriculumRepository {
         lower.contains("sci") -> "isci"
         lower.contains("soc") -> "sost"
         lower.contains("agri") -> "agri"
+        lower.contains("indig") -> "indig"
+        lower.contains("arab") -> "arabic"
+        lower.contains("chinese") || lower.contains("mandarin") -> "chinese"
+        lower.contains("french") -> "french"
         lower.contains("tech") -> "ptech"
         lower.contains("art") || lower.contains("sport") || lower.contains("creativ") -> "arts"
         lower.contains("rel") || lower.contains("cre") || lower.contains("ire") -> "reled"
         else -> "math"
       }
     }
+  }
+
+  /** Uses the catalogue's own subject id when present, falling back to the label. */
+  fun subjectIdForDesign(grade: String, subjectId: String, areaOrId: String): String {
+    val resolved = subjectId.trim().ifBlank { subjectIdForArea(grade, areaOrId) }
+    val gradeNumber = grade.filter { it.isDigit() }.toIntOrNull() ?: 0
+    // The catalogue uses indig_p and indig for the same junior-school subject.
+    return if (gradeNumber >= 7 && resolved.equals("indig_p", ignoreCase = true)) "indig" else resolved
   }
 
   fun areaNameForSubjectId(subjectId: String): String =
@@ -137,9 +201,10 @@ object KicdCurriculumRepository {
     return cbcGrades.firstOrNull { streamName.contains(it, ignoreCase = true) } ?: "Grade 7"
   }
 
-  fun levelForGrade(grade: String): String = when (grade) {
-    "Grade 1", "Grade 2", "Grade 3" -> "Lower Primary"
-    "Grade 4", "Grade 5", "Grade 6" -> "Upper Primary"
+  fun levelForGrade(grade: String): String = when {
+    grade.startsWith("Pre-Primary", ignoreCase = true) -> "Pre-Primary"
+    grade == "Grade 1" || grade == "Grade 2" || grade == "Grade 3" -> "Lower Primary"
+    grade == "Grade 4" || grade == "Grade 5" || grade == "Grade 6" -> "Upper Primary"
     else -> "Junior School"
   }
 

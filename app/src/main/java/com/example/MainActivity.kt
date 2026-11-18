@@ -403,6 +403,7 @@ private fun ModuleRouter(
       onDeleteScheme = viewModel::deleteScheme,
       onExportPdf = viewModel::exportSchemePdf,
       onPlanLessonRow = viewModel::planFromSchemeRow,
+      onPlanSchemeRow = viewModel::planFromSavedScheme,
       onClearKicdPrefill = viewModel::clearPendingKicdPrefill,
       onBackToServices = onBackToServices,
     )
@@ -411,6 +412,7 @@ private fun ModuleRouter(
       onSavePlan = viewModel::saveLessonPlan,
       onDeletePlan = viewModel::deleteLessonPlan,
       onExportPdf = viewModel::exportLessonPlanPdf,
+      onRecordPlan = viewModel::recordFromLessonPlan,
       onClearKicdPrefill = viewModel::clearPendingKicdPrefill,
       onClearPlanPrefill = viewModel::clearPendingPlanPrefill,
       onBackToServices = onBackToServices,
@@ -420,6 +422,7 @@ private fun ModuleRouter(
       onSaveRecord = viewModel::saveRecordOfWork,
       onDeleteRecord = viewModel::deleteRecordOfWork,
       onExportPdf = viewModel::exportRecordsPdf,
+      onClearRecordPrefill = viewModel::clearPendingRecordPrefill,
       onBackToServices = onBackToServices,
     )
     TeacherModule.ATTENDANCE -> AttendanceScreen(

@@ -1170,18 +1170,28 @@ fun KicdDesignsScreen(
     onLoadKicdDesigns(browseGrade, selectedSubjectId)
   }
 
-  val combinedDesigns = remember(state.remoteKicdDesigns, browseGrade, selectedSubjectId, searchQuery) {
-    val all = (state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns).distinctBy { it.id }
-    val filtered = all.filter { item ->
-      val matchesGrade = searchQuery.isNotBlank() || item.grade.equals(browseGrade, ignoreCase = true)
-      val matchesSearch = searchQuery.isBlank() ||
+  val combinedDesigns = remember(
+    state.remoteKicdDesigns,
+    state.bundledKicdDesigns,
+    browseGrade,
+    selectedSubjectId,
+    searchQuery,
+  ) {
+    val all = (state.bundledKicdDesigns + state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns)
+      .distinctBy { it.id }
+    if (searchQuery.isNotBlank()) {
+      all.filter { item ->
         item.learningArea.contains(searchQuery, ignoreCase = true) ||
-        item.strand.contains(searchQuery, ignoreCase = true) ||
-        item.subStrand.contains(searchQuery, ignoreCase = true) ||
-        item.grade.contains(searchQuery, ignoreCase = true)
-      matchesGrade && matchesSearch
+          item.strand.contains(searchQuery, ignoreCase = true) ||
+          item.subStrand.contains(searchQuery, ignoreCase = true) ||
+          item.grade.contains(searchQuery, ignoreCase = true)
+      }
+    } else {
+      all.filter { item ->
+        item.grade.equals(browseGrade, ignoreCase = true) &&
+          KicdCurriculumRepository.subjectIdForDesign(item.grade, item.subjectId, item.learningArea) == selectedSubjectId
+      }
     }
-    filtered.ifEmpty { all.take(5) }
   }
 
   val combinedResources = remember(state.remoteResources, browseGrade) {
@@ -1210,7 +1220,7 @@ fun KicdDesignsScreen(
         modifier = Modifier.fillMaxWidth().testTag("kicd_search_input"),
       )
       Spacer(Modifier.height(8.dp))
-      GradeSelectorRow(KicdCurriculumRepository.cbcGrades, browseGrade, onSelectGrade = { browseGrade = it })
+      GradeSelectorRow(KicdCurriculumRepository.curriculumGrades, browseGrade, onSelectGrade = { browseGrade = it })
       Spacer(Modifier.height(8.dp))
       Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         gradeSubjects.forEach { subj ->
@@ -1225,6 +1235,16 @@ fun KicdDesignsScreen(
             shape = RoundedCornerShape(99.dp),
           )
         }
+      }
+    }
+
+    if (combinedDesigns.isEmpty() && searchQuery.isBlank()) {
+      item {
+        Text(
+          "No KICD templates for $browseGrade · ${gradeSubjects.firstOrNull { it.id == selectedSubjectId }?.name ?: "this learning area"}.",
+          style = MaterialTheme.typography.bodyMedium,
+          color = extra.muted,
+        )
       }
     }
 

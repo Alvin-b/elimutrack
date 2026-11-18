@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.curriculum.KicdCurriculumRepository
+import com.example.data.curriculum.BundledCurriculum
 import com.example.data.remote.ApiException
 import com.example.data.repository.TeacherRepository
 import com.example.domain.model.AllocatedClass
@@ -19,10 +20,12 @@ import com.example.domain.model.KicdDesignItem
 import com.example.domain.model.Learner
 import com.example.domain.model.LearnerProgressEntry
 import com.example.domain.model.LessonPlan
+import com.example.domain.model.LessonPlanPrefill
 import com.example.domain.model.LessonPlanTemplateSection
 import com.example.domain.model.MarkEntry
 import com.example.domain.model.ObservationNote
 import com.example.domain.model.RecordOfWork
+import com.example.domain.model.RecordOfWorkPrefill
 import com.example.domain.model.SchemeOfWork
 import com.example.domain.model.SchemeRow
 import com.example.domain.model.SyncStatus
@@ -65,6 +68,7 @@ data class TeacherUiState(
   val remoteResources: List<ApprovedResource> = emptyList(),
   val feePayments: List<FeePaymentRecord> = emptyList(),
   val schemes: List<SchemeOfWork> = emptyList(),
+  val bundledKicdDesigns: List<KicdDesignItem> = emptyList(),
   val lessonPlans: List<LessonPlan> = emptyList(),
   val recordsOfWork: List<RecordOfWork> = emptyList(),
   val learners: List<Learner> = emptyList(),
@@ -81,7 +85,8 @@ data class TeacherUiState(
   val exportedPdf: ExportedPdf? = null,
   val exportedCsv: Pair<String, String>? = null,
   val pendingKicdPrefill: KicdDesignItem? = null,
-  val pendingPlanPrefill: Pair<String, String>? = null,
+  val pendingPlanPrefill: LessonPlanPrefill? = null,
+  val pendingRecordPrefill: RecordOfWorkPrefill? = null,
 ) {
   val activeClass: AllocatedClass?
     get() = session?.allocatedClasses?.firstOrNull {
@@ -122,7 +127,8 @@ class TeacherViewModel(
   private val exportedPdfFlow = MutableStateFlow<ExportedPdf?>(null)
   private val exportedCsvFlow = MutableStateFlow<Pair<String, String>?>(null)
   private val pendingKicdFlow = MutableStateFlow<KicdDesignItem?>(null)
-  private val pendingPlanFlow = MutableStateFlow<Pair<String, String>?>(null)
+  private val pendingPlanFlow = MutableStateFlow<LessonPlanPrefill?>(null)
+  private val pendingRecordFlow = MutableStateFlow<RecordOfWorkPrefill?>(null)
   private val sessionLoadedFlow = MutableStateFlow(false)
 
   private val dashboardSummaryFlow = MutableStateFlow<DashboardSummary?>(null)
@@ -171,6 +177,12 @@ class TeacherViewModel(
           selectedStreamFlow.value = ""
           initialRefreshDone = false
         }
+      }
+    }
+
+    viewModelScope.launch {
+      repository.lessonPlanTemplateFlow.collect { template ->
+        if (template.isNotEmpty()) lessonPlanTemplateFlow.value = template
       }
     }
   }
@@ -236,17 +248,17 @@ class TeacherViewModel(
   }
 
   private val remoteExtrasFlow = combine(
-    dashboardSummaryFlow,
-    lessonPlanTemplateFlow,
-    remoteKicdDesignsFlow,
-    remoteResourcesFlow,
-    feePaymentsFlow,
-  ) { summary, template, kicd, resources, payments ->
-    RemoteExtrasBundle(summary, template, kicd, resources, payments)
+    combine(dashboardSummaryFlow, lessonPlanTemplateFlow) { summary, template -> summary to template },
+    combine(remoteKicdDesignsFlow, remoteResourcesFlow, feePaymentsFlow) { kicd, resources, payments ->
+      Triple(kicd, resources, payments)
+    },
+    BundledCurriculum.designsFlow,
+  ) { (summary, template), (kicd, resources, payments), bundled ->
+    RemoteExtrasBundle(summary, template, kicd, resources, payments, bundled)
   }
 
-  private val prefillsFlow = combine(pendingKicdFlow, pendingPlanFlow, exportedCsvFlow) { k, p, csv ->
-    Triple(k, p, csv)
+  private val prefillsFlow = combine(pendingKicdFlow, pendingPlanFlow, pendingRecordFlow, exportedCsvFlow) { k, p, r, csv ->
+    PrefillsBundle(k, p, r, csv)
   }
 
   val uiState: StateFlow<TeacherUiState> = combine(
@@ -291,6 +303,7 @@ class TeacherViewModel(
       remoteResources = rem.resources,
       feePayments = rem.payments,
       schemes = core.schemes,
+      bundledKicdDesigns = rem.bundledKicd,
       lessonPlans = core.plans,
       recordsOfWork = core.records,
       learners = cls.learners,
@@ -308,9 +321,10 @@ class TeacherViewModel(
       loginError = ext.loginErr,
       snackbarMessage = ext.snack,
       exportedPdf = ext.pdf,
-      exportedCsv = pre.third,
-      pendingKicdPrefill = pre.first,
-      pendingPlanPrefill = pre.second,
+      exportedCsv = pre.csv,
+      pendingKicdPrefill = pre.kicd,
+      pendingPlanPrefill = pre.plan,
+      pendingRecordPrefill = pre.record,
     )
   }.stateIn(
     scope = viewModelScope,
@@ -352,7 +366,7 @@ class TeacherViewModel(
       when (module) {
         TeacherModule.LESSON_PLANS -> {
           repository.fetchLessonPlans(stream).onSuccess { (tpl, _) ->
-            lessonPlanTemplateFlow.value = tpl
+            if (tpl.isNotEmpty()) lessonPlanTemplateFlow.value = tpl
           }.onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
         }
         TeacherModule.FEE_PAYMENTS -> {
@@ -431,6 +445,10 @@ class TeacherViewModel(
     pendingPlanFlow.value = null
   }
 
+  fun clearPendingRecordPrefill() {
+    pendingRecordFlow.value = null
+  }
+
   fun useKicdInScheme(design: KicdDesignItem) {
     val allowed = uiState.value.session?.allowedModules ?: emptySet()
     if (TeacherModule.SCHEMES !in allowed) {
@@ -457,8 +475,58 @@ class TeacherViewModel(
       snackbarFlow.value = "Lesson plans is not enabled for your account."
       return
     }
-    pendingPlanFlow.value = topic to outcomes
+    pendingPlanFlow.value = LessonPlanPrefill(subStrand = topic, outcomes = outcomes)
     navigateToModule(TeacherModule.LESSON_PLANS)
+  }
+
+  /** Carries the exact scheme lesson into a new lesson plan, offline included. */
+  fun planFromSavedScheme(scheme: SchemeOfWork, row: SchemeRow) {
+    val allowed = uiState.value.session?.allowedModules ?: emptySet()
+    if (TeacherModule.LESSON_PLANS !in allowed) {
+      snackbarFlow.value = "Lesson plans is not enabled for your account."
+      return
+    }
+    pendingPlanFlow.value = LessonPlanPrefill(
+      schemeId = row.remoteId.orEmpty(),
+      schemeLocalId = scheme.id,
+      learningArea = scheme.learningArea,
+      term = scheme.term,
+      week = row.week,
+      lesson = row.lesson,
+      strand = row.strand,
+      subStrand = row.subStrand,
+      outcomes = row.specificOutcomes,
+      keyInquiryQuestion = row.keyInquiryQuestion,
+      learningExperiences = row.learningExperiences,
+      learningResources = row.learningResources,
+    )
+    navigateToModule(TeacherModule.LESSON_PLANS)
+  }
+
+  /** Turns a saved lesson plan into a record of work with the same links. */
+  fun recordFromLessonPlan(plan: LessonPlan) {
+    val allowed = uiState.value.session?.allowedModules ?: emptySet()
+    if (TeacherModule.RECORD_OF_WORK !in allowed) {
+      snackbarFlow.value = "Record of work is not enabled for your account."
+      return
+    }
+    val topic = plan.topic.ifBlank { plan.subStrand }
+    pendingRecordFlow.value = RecordOfWorkPrefill(
+      schemeId = plan.schemeId,
+      schemeLocalId = plan.schemeLocalId,
+      lessonPlanId = plan.remoteId,
+      lessonPlanLocalId = plan.id,
+      learningArea = plan.learningArea,
+      term = plan.term,
+      week = plan.week,
+      lesson = plan.lessonNumber,
+      strand = plan.strand,
+      subStrand = plan.subStrand,
+      topic = topic,
+      workCovered = topic,
+      classSize = plan.rollCount,
+    )
+    navigateToModule(TeacherModule.RECORD_OF_WORK)
   }
 
   // --- Authentication & Session Management ---
@@ -544,7 +612,7 @@ class TeacherViewModel(
         val allowed = session.allowedModules
         if (TeacherModule.LESSON_PLANS in allowed) {
           repository.fetchLessonPlans(stream).onSuccess { (tpl, _) ->
-            lessonPlanTemplateFlow.value = tpl
+            if (tpl.isNotEmpty()) lessonPlanTemplateFlow.value = tpl
           }
         }
         if (TeacherModule.FEE_PAYMENTS in allowed) {
@@ -618,12 +686,34 @@ class TeacherViewModel(
   ) {
     val stream = uiState.value.selectedStream.ifBlank { return }
     val subjectId = KicdCurriculumRepository.subjectIdForArea(grade, learningArea)
+    val schemeId = existingId ?: "sch_${stream}_${learningArea}_${term}".lowercase().replace(" ", "_")
+    val session = uiState.value.session
+    val localScheme = SchemeOfWork(
+      id = schemeId,
+      title = title.ifBlank { "$stream · $learningArea ($term)" },
+      schoolName = session?.schoolName.orEmpty(),
+      teacherName = session?.fullName.orEmpty(),
+      grade = grade,
+      stream = stream,
+      learningArea = learningArea,
+      term = term,
+      year = year,
+      rows = rows,
+      updatedAt = System.currentTimeMillis(),
+      synced = false,
+    )
     viewModelScope.launch {
+      repository.saveScheme(localScheme)
       repository.saveSchemesBulkRemote(stream, grade, subjectId, term, rows)
         .onSuccess {
-          snackbarFlow.value = "Scheme of work saved"
+          repository.markSchemeSynced(schemeId)
+          snackbarFlow.value = "Scheme saved and sent to the school server"
         }.onFailure { err ->
-          handleApiFailure(err, deniedModule = TeacherModule.SCHEMES)
+          if (err is ApiException) {
+            handleApiFailure(err, deniedModule = TeacherModule.SCHEMES)
+          } else {
+            snackbarFlow.value = "Scheme saved offline. It will sync when you are back online."
+          }
         }
     }
   }
@@ -641,20 +731,35 @@ class TeacherViewModel(
 
   fun saveLessonPlan(plan: LessonPlan, isUpdate: Boolean, contentMap: Map<String, String>) {
     val stream = uiState.value.selectedStream.ifBlank { plan.stream }
-    val scopedPlan = plan.copy(stream = stream, updatedAt = System.currentTimeMillis())
+    val existing = uiState.value.lessonPlans.firstOrNull { it.id == plan.id }
+    val scopedPlan = plan.copy(
+      stream = stream,
+      remoteId = plan.remoteId.ifBlank { existing?.remoteId.orEmpty() },
+      updatedAt = System.currentTimeMillis(),
+      synced = false,
+    )
     viewModelScope.launch {
-      repository.saveLessonPlanRemote(scopedPlan, isUpdate = isUpdate, contentMap = contentMap)
-        .onSuccess {
-          snackbarFlow.value = "Lesson plan saved"
-        }.onFailure { err ->
+      repository.saveLessonPlan(scopedPlan)
+      repository.saveLessonPlanRemote(
+        scopedPlan,
+        isUpdate = isUpdate || scopedPlan.remoteId.isNotBlank(),
+        contentMap = contentMap,
+      ).onSuccess {
+        snackbarFlow.value = "Lesson plan saved and linked to its scheme"
+      }.onFailure { err ->
+        if (err is ApiException) {
           handleApiFailure(err, deniedModule = TeacherModule.LESSON_PLANS)
+        } else {
+          snackbarFlow.value = "Lesson plan saved offline. It will sync when you are back online."
         }
+      }
     }
   }
 
   fun deleteLessonPlan(id: String) {
+    val plan = uiState.value.lessonPlans.firstOrNull { it.id == id } ?: return
     viewModelScope.launch {
-      repository.deleteLessonPlanRemote(id)
+      repository.deleteLessonPlanRemote(plan)
         .onSuccess {
           snackbarFlow.value = "Deleted lesson plan"
         }.onFailure { err ->
@@ -665,20 +770,34 @@ class TeacherViewModel(
 
   fun saveRecordOfWork(record: RecordOfWork, isUpdate: Boolean = false) {
     val stream = uiState.value.selectedStream.ifBlank { record.stream }
-    val scopedRecord = record.copy(stream = stream, updatedAt = System.currentTimeMillis())
+    val existing = uiState.value.recordsOfWork.firstOrNull { it.id == record.id }
+    val scopedRecord = record.copy(
+      stream = stream,
+      remoteId = record.remoteId.ifBlank { existing?.remoteId.orEmpty() },
+      updatedAt = System.currentTimeMillis(),
+      synced = false,
+    )
     viewModelScope.launch {
-      repository.saveRecordWorkRemote(scopedRecord, isUpdate = isUpdate)
-        .onSuccess {
-          snackbarFlow.value = "Record of work saved"
-        }.onFailure { err ->
+      repository.saveRecordOfWork(scopedRecord)
+      repository.saveRecordWorkRemote(
+        scopedRecord,
+        isUpdate = isUpdate || scopedRecord.remoteId.isNotBlank(),
+      ).onSuccess {
+        snackbarFlow.value = "Record of work saved and linked"
+      }.onFailure { err ->
+        if (err is ApiException) {
           handleApiFailure(err, deniedModule = TeacherModule.RECORD_OF_WORK)
+        } else {
+          snackbarFlow.value = "Record saved offline. It will sync when you are back online."
         }
+      }
     }
   }
 
   fun deleteRecordOfWork(id: String) {
+    val record = uiState.value.recordsOfWork.firstOrNull { it.id == id } ?: return
     viewModelScope.launch {
-      repository.deleteRecordWorkRemote(id)
+      repository.deleteRecordWorkRemote(record)
         .onSuccess {
           snackbarFlow.value = "Deleted record of work"
         }.onFailure { err ->
@@ -1137,11 +1256,19 @@ private data class RemoteExtrasBundle(
   val kicd: List<KicdDesignItem>,
   val resources: List<ApprovedResource>,
   val payments: List<FeePaymentRecord>,
+  val bundledKicd: List<KicdDesignItem>,
 )
 
 private data class UiTuple(
   val ctrl: UiControlBundle,
   val ext: ExtrasBundle,
   val rem: RemoteExtrasBundle,
-  val pre: Triple<KicdDesignItem?, Pair<String, String>?, Pair<String, String>?>,
+  val pre: PrefillsBundle,
+)
+
+private data class PrefillsBundle(
+  val kicd: KicdDesignItem?,
+  val plan: LessonPlanPrefill?,
+  val record: RecordOfWorkPrefill?,
+  val csv: Pair<String, String>?,
 )

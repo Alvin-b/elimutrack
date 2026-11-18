@@ -19,6 +19,7 @@ data class KicdDesignItem(
   val suggestedResources: List<String>,
   val assessmentRubric: Map<String, String>,
   val sourceType: String = "Official KICD",
+  val subjectId: String = "",
 )
 
 @JsonClass(generateAdapter = true)
@@ -42,6 +43,7 @@ data class SchemeOfWork(
   val schoolName: String,
   val teacherName: String,
   val grade: String,
+  val stream: String = "",
   val learningArea: String,
   val term: String,
   val year: Int,
@@ -86,6 +88,9 @@ data class LessonPlan(
   val updatedAt: Long,
   val synced: Boolean = false,
   val extraContent: Map<String, String> = emptyMap(),
+  val remoteId: String = "",
+  val schemeId: String = "",
+  val schemeLocalId: String = "",
 )
 
 data class RecordOfWork(
@@ -113,6 +118,42 @@ data class RecordOfWork(
   val classSize: Int = 0,
   val schemeId: String = "",
   val lessonPlanId: String = "",
+  val remoteId: String = "",
+  val schemeLocalId: String = "",
+  val lessonPlanLocalId: String = "",
+)
+
+/** Everything the scheme row needs to pre-fill a lesson plan without a network call. */
+data class LessonPlanPrefill(
+  val schemeId: String = "",
+  val schemeLocalId: String = "",
+  val learningArea: String = "",
+  val term: String = "",
+  val week: Int = 1,
+  val lesson: Int = 1,
+  val strand: String = "",
+  val subStrand: String = "",
+  val outcomes: String = "",
+  val keyInquiryQuestion: String = "",
+  val learningExperiences: String = "",
+  val learningResources: String = "",
+)
+
+/** Everything a lesson plan (or scheme row) needs to pre-fill a record of work. */
+data class RecordOfWorkPrefill(
+  val schemeId: String = "",
+  val schemeLocalId: String = "",
+  val lessonPlanId: String = "",
+  val lessonPlanLocalId: String = "",
+  val learningArea: String = "",
+  val term: String = "",
+  val week: Int = 1,
+  val lesson: Int = 1,
+  val strand: String = "",
+  val subStrand: String = "",
+  val topic: String = "",
+  val workCovered: String = "",
+  val classSize: Int = 0,
 )
 
 data class TimetableSlot(

@@ -64,6 +64,7 @@ fun SchemesScreen(
   onDeleteScheme: (SchemeOfWork) -> Unit,
   onExportPdf: (SchemeOfWork) -> Unit,
   onPlanLessonRow: (topic: String, outcomes: String) -> Unit,
+  onPlanSchemeRow: (SchemeOfWork, SchemeRow) -> Unit,
   onClearKicdPrefill: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
@@ -72,6 +73,7 @@ fun SchemesScreen(
   var editingScheme by remember { mutableStateOf<SchemeOfWork?>(null) }
   var isCreating by remember { mutableStateOf(false) }
   var showKicdPicker by remember { mutableStateOf(false) }
+  var planScheme by remember { mutableStateOf<SchemeOfWork?>(null) }
 
   val gradeSubjects = remember(state.selectedGrade) {
     KicdCurriculumRepository.subjectsForGrade(state.selectedGrade)
@@ -249,12 +251,34 @@ fun SchemesScreen(
     }
 
     if (showKicdPicker) {
-      val pickerDesigns = (state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns).distinctBy { it.id }
+      val pickerDesigns = remember(
+        state.remoteKicdDesigns,
+        state.bundledKicdDesigns,
+        state.selectedGrade,
+        learningArea,
+      ) {
+        val all = (state.bundledKicdDesigns + state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns)
+          .distinctBy { it.id }
+        val subjectId = KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, learningArea)
+        all.filter { d ->
+          d.grade.equals(state.selectedGrade, ignoreCase = true) &&
+            KicdCurriculumRepository.subjectIdForDesign(d.grade, d.subjectId, d.learningArea) == subjectId
+        }.ifEmpty {
+          all.filter { it.grade.equals(state.selectedGrade, ignoreCase = true) }
+        }
+      }
       AlertDialog(
         onDismissRequest = { showKicdPicker = false },
         title = { Text("Auto-Fill from KICD Design") },
         text = {
           Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (pickerDesigns.isEmpty()) {
+              Text(
+                "No KICD templates found for $learningArea · ${state.selectedGrade}.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = extra.muted,
+              )
+            }
             pickerDesigns.forEach { d ->
               Surface(
                 color = MaterialTheme.colorScheme.background,
@@ -310,8 +334,17 @@ fun SchemesScreen(
           it.learningArea.equals(selectedAreaName, ignoreCase = true))
     }.ifEmpty { state.schemes.filter { it.grade == state.selectedGrade } }
 
-    val sampleRows = KicdCurriculumRepository.kicdDesigns.filter { it.grade == state.selectedGrade }
-      .ifEmpty { KicdCurriculumRepository.kicdDesigns.take(3) }
+    val sampleRows = (state.bundledKicdDesigns + state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns)
+      .distinctBy { it.id }
+      .filter { design ->
+        design.grade.equals(state.selectedGrade, ignoreCase = true) &&
+          KicdCurriculumRepository.subjectIdForDesign(design.grade, design.subjectId, design.learningArea) == selectedSubjectId
+      }
+      .ifEmpty {
+        (state.bundledKicdDesigns + state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns)
+          .distinctBy { it.id }
+          .filter { it.grade.equals(state.selectedGrade, ignoreCase = true) }
+      }
 
     LazyColumn(
       modifier = Modifier.fillMaxSize().padding(innerPadding),
@@ -354,12 +387,16 @@ fun SchemesScreen(
                 Column(modifier = Modifier.weight(1f)) {
                   Text(scheme.title, style = MaterialTheme.typography.titleMedium)
                   Text("${scheme.grade} · ${scheme.learningArea} · ${scheme.term}", style = MaterialTheme.typography.bodySmall, color = extra.muted)
+                  if (!scheme.synced) {
+                    Text("Saved offline · waiting to sync", style = MaterialTheme.typography.labelSmall, color = extra.me)
+                  }
                 }
                 Surface(color = MaterialTheme.colorScheme.background, border = BorderStroke(1.dp, extra.line), shape = RoundedCornerShape(99.dp)) {
                   Text("${scheme.rows.size} rows", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp))
                 }
               }
               Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { planScheme = scheme }) { Text("Plan lesson") }
                 OutlinedButton(onClick = {
                   editingScheme = scheme
                   title = scheme.title
@@ -398,6 +435,20 @@ fun SchemesScreen(
         }
       }
 
+      item {
+        Text("KICD templates", style = MaterialTheme.typography.titleMedium)
+      }
+
+      if (sampleRows.isEmpty()) {
+        item {
+          Text(
+            "No bundled templates for $selectedAreaName · ${state.selectedGrade}.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = extra.muted,
+          )
+        }
+      }
+
       items(sampleRows, key = { it.id }) { design ->
         Surface(
           color = MaterialTheme.colorScheme.surface,
@@ -432,6 +483,40 @@ fun SchemesScreen(
           }
         }
       }
+    }
+
+    planScheme?.let { scheme ->
+      AlertDialog(
+        onDismissRequest = { planScheme = null },
+        title = { Text("Choose a lesson to plan") },
+        text = {
+          Column(
+            modifier = Modifier.verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            scheme.rows.forEach { row ->
+              Surface(
+                color = MaterialTheme.colorScheme.background,
+                shape = RoundedCornerShape(10.dp),
+                onClick = {
+                  onPlanSchemeRow(scheme, row)
+                  planScheme = null
+                },
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                  Text("Week ${row.week}, Lesson ${row.lesson}", style = MaterialTheme.typography.labelSmall, color = extra.me)
+                  Text(row.subStrand.ifBlank { row.strand }, style = MaterialTheme.typography.titleSmall)
+                  if (row.specificOutcomes.isNotBlank()) {
+                    Text(row.specificOutcomes, style = MaterialTheme.typography.bodySmall, color = extra.muted, maxLines = 2)
+                  }
+                }
+              }
+            }
+          }
+        },
+        confirmButton = { TextButton(onClick = { planScheme = null }) { Text("Close") } },
+      )
     }
   }
 }

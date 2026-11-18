@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.curriculum.KicdCurriculumRepository
+import com.example.data.curriculum.DefaultLessonPlanTemplate
 import com.example.domain.model.LessonPlan
 import com.example.domain.model.LessonPlanTemplateSection
 import com.example.domain.model.RecordOfWork
@@ -60,18 +61,37 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
-private val defaultCbcSections = listOf(
-  LessonPlanTemplateSection("sec1", "1. Specific learning outcomes"),
-  LessonPlanTemplateSection("sec2", "2. Core competencies"),
-  LessonPlanTemplateSection("sec3", "3. Key inquiry question"),
-  LessonPlanTemplateSection("sec4", "4. Learning resources"),
-  LessonPlanTemplateSection("sec5", "5. Organization of learning"),
-  LessonPlanTemplateSection("sec6", "6. Introduction"),
-  LessonPlanTemplateSection("sec7", "7. Lesson development"),
-  LessonPlanTemplateSection("sec8", "8. Conclusion"),
-  LessonPlanTemplateSection("sec9", "9. Extended activity"),
-  LessonPlanTemplateSection("sec10", "10. Reflection"),
-)
+private fun normalizeLabel(value: String): String =
+  value.lowercase().replace(Regex("[^a-z0-9]+"), " ").trim()
+
+private fun List<LessonPlanTemplateSection>.keyForAliases(vararg aliases: String): String? {
+  val normalized = aliases.map(::normalizeLabel).filter { it.isNotBlank() }
+  return firstOrNull { section ->
+    val label = normalizeLabel(section.label)
+    normalized.any { alias ->
+      label == alias || label.contains(alias) || (alias.length > 4 && alias.contains(label) && label.length > 3)
+    }
+  }?.key ?: aliases.firstOrNull { key -> any { it.key.equals(key, ignoreCase = true) } }
+}
+
+private fun LessonPlan.valueForSection(section: LessonPlanTemplateSection): String {
+  val saved = extraContent[section.key]
+  if (!saved.isNullOrBlank()) return saved
+  val label = normalizeLabel(section.label)
+  return when {
+    "outcome" in label -> specificOutcomes
+    "competenc" in label -> coreCompetencies
+    "inquiry" in label -> keyInquiryQuestions
+    "resource" in label -> learningResources
+    "organization" in label || "organisation" in label -> organizationOfLearning
+    "introduction" in label -> introduction
+    "development" in label -> lessonDevelopment
+    "conclusion" in label -> conclusion
+    "extended" in label -> extendedActivity
+    "reflection" in label -> reflection
+    else -> ""
+  }
+}
 
 @Composable
 fun LessonPlansScreen(
@@ -79,6 +99,7 @@ fun LessonPlansScreen(
   onSavePlan: (plan: LessonPlan, isUpdate: Boolean, contentMap: Map<String, String>) -> Unit,
   onDeletePlan: (String) -> Unit,
   onExportPdf: (LessonPlan) -> Unit,
+  onRecordPlan: (LessonPlan) -> Unit,
   onClearKicdPrefill: () -> Unit,
   onClearPlanPrefill: () -> Unit,
   onBackToServices: () -> Unit,
@@ -91,25 +112,31 @@ fun LessonPlansScreen(
   val activeStream = state.selectedStream.ifBlank {
     state.activeClass?.streamKey ?: state.selectedGrade
   }
-  val sections = state.lessonPlanTemplate.ifEmpty { defaultCbcSections }
+  val sections = state.lessonPlanTemplate.ifEmpty { DefaultLessonPlanTemplate.sections }
 
   var editingId by remember { mutableStateOf<String?>(null) }
   var learningArea by remember(state.selectedGrade) { mutableStateOf(gradeSubjects.firstOrNull()?.name ?: "Mathematics") }
   var lessonDate by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
   var topic by remember { mutableStateOf("") }
   var strand by remember { mutableStateOf("") }
+  var schemeId by remember { mutableStateOf("") }
+  var schemeLocalId by remember { mutableStateOf("") }
+  var planWeek by remember { mutableStateOf(1) }
+  var planLesson by remember { mutableStateOf(1) }
+  var planTerm by remember { mutableStateOf(session.currentTerm) }
   var hintNote by remember { mutableStateOf<String?>(null) }
   var showKicdPicker by remember { mutableStateOf(false) }
 
   val sectionValues = remember(sections) {
     mutableStateMapOf<String, String>().apply {
       sections.forEach { sec ->
-        put(sec.key, when (sec.key) {
-          "sec2", "competencies" -> "Communication and Collaboration, Critical Thinking"
-          "sec5", "organization" -> "Pair & small group activities inside the classroom"
-          "sec6", "introduction" -> "Review prior knowledge using oral warm-up questions."
-          "sec8", "conclusion" -> "Learners summarize key takeaways and complete a quick check."
-          "sec9", "extended" -> "Practice with family members at home."
+        val label = normalizeLabel(sec.label)
+        put(sec.key, when {
+          "competenc" in label -> "Communication and Collaboration, Critical Thinking"
+          "organization" in label || "organisation" in label -> "Pair & small group activities inside the classroom"
+          "introduction" in label -> "Review prior knowledge using oral warm-up questions."
+          "conclusion" in label -> "Learners summarize key takeaways and complete a quick check."
+          "extended" in label -> "Practice with family members at home."
           else -> ""
         })
       }
@@ -117,15 +144,13 @@ fun LessonPlansScreen(
   }
 
   fun setSectionByAliases(value: String, vararg keys: String) {
-    val target = sections.firstOrNull { sec -> keys.any { k -> sec.key.equals(k, ignoreCase = true) } }?.key
-      ?: keys.firstOrNull()
+    val target = sections.keyForAliases(*keys)
     if (target != null) sectionValues[target] = value
   }
 
   fun getSectionByAliases(vararg keys: String): String {
-    for (k in keys) {
-      sectionValues[k]?.takeIf { it.isNotBlank() }?.let { return it }
-    }
+    val target = sections.keyForAliases(*keys)
+    if (target != null) sectionValues[target]?.takeIf { it.isNotBlank() }?.let { return it }
     return ""
   }
 
@@ -134,20 +159,30 @@ fun LessonPlansScreen(
     learningArea = d.learningArea
     strand = d.strand
     topic = d.subStrand
-    setSectionByAliases(d.specificLearningOutcomes.joinToString("\n• ", prefix = "• "), "sec1", "outcomes", "specificOutcomes")
-    setSectionByAliases(d.coreCompetencies.joinToString(", "), "sec2", "competencies", "coreCompetencies")
-    setSectionByAliases(d.keyInquiryQuestions.joinToString("\n"), "sec3", "inquiry", "keyInquiryQuestions")
-    setSectionByAliases(d.suggestedResources.joinToString(", "), "sec4", "resources", "learningResources")
-    setSectionByAliases(d.learningExperiences.joinToString("\n"), "sec7", "development", "lessonDevelopment")
+    setSectionByAliases(d.specificLearningOutcomes.joinToString("\n• ", prefix = "• "), "Specific Learning Outcomes", "Outcomes", "sec1", "outcomes", "specificOutcomes")
+    setSectionByAliases(d.coreCompetencies.joinToString(", "), "Core Competencies", "Competencies", "sec3", "competencies", "coreCompetencies")
+    setSectionByAliases(d.keyInquiryQuestions.joinToString("\n"), "Key Inquiry Question", "Inquiry", "sec2", "inquiry", "keyInquiryQuestions")
+    setSectionByAliases(d.suggestedResources.joinToString(", "), "Learning Resources", "Resources", "sec6", "sec4", "resources", "learningResources")
+    setSectionByAliases(d.learningExperiences.joinToString("\n"), "Lesson Development", "Development", "sec8", "sec7", "development", "lessonDevelopment")
     hintNote = "Outcomes and inquiry questions filled from KICD design."
     onClearKicdPrefill()
   }
 
   LaunchedEffect(state.pendingPlanPrefill) {
-    val pair = state.pendingPlanPrefill ?: return@LaunchedEffect
-    topic = pair.first
-    setSectionByAliases(pair.second, "sec1", "outcomes", "specificOutcomes")
-    hintNote = "Topic and outcomes filled from your scheme row."
+    val prefill = state.pendingPlanPrefill ?: return@LaunchedEffect
+    if (prefill.learningArea.isNotBlank()) learningArea = prefill.learningArea
+    if (prefill.term.isNotBlank()) planTerm = prefill.term
+    schemeId = prefill.schemeId
+    schemeLocalId = prefill.schemeLocalId
+    planWeek = prefill.week
+    planLesson = prefill.lesson
+    strand = prefill.strand
+    topic = prefill.subStrand
+    setSectionByAliases(prefill.outcomes, "Specific Learning Outcomes", "Outcomes", "sec1", "outcomes", "specificOutcomes")
+    setSectionByAliases(prefill.keyInquiryQuestion, "Key Inquiry Question", "Inquiry", "sec2", "sec3", "inquiry", "keyInquiryQuestions")
+    setSectionByAliases(prefill.learningExperiences, "Lesson Development", "Development", "sec8", "sec7", "development", "lessonDevelopment")
+    setSectionByAliases(prefill.learningResources, "Learning Resources", "Resources", "sec6", "sec4", "resources", "learningResources")
+    hintNote = "Week ${prefill.week}, lesson ${prefill.lesson} filled from your scheme of work. Complete the plan, then create its record of work."
     onClearPlanPrefill()
   }
 
@@ -248,35 +283,42 @@ fun LessonPlansScreen(
                   grade = state.selectedGrade,
                   stream = activeStream,
                   learningArea = learningArea,
-                  term = session.currentTerm,
-                  week = 1,
-                  lessonNumber = savedForClass.size + 1,
+                  term = planTerm.ifBlank { session.currentTerm },
+                  week = planWeek,
+                  lessonNumber = planLesson,
                   date = lessonDate.ifBlank { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) },
                   timeSlot = "8:20 - 8:55",
                   rollCount = state.learners.count { state.matchesActiveClass(it.stream, it.grade) }.coerceAtLeast(1),
                   strand = strand.ifBlank { topic },
                   subStrand = topic,
                   topic = topic,
-                  specificOutcomes = getSectionByAliases("sec1", "outcomes", "specificOutcomes"),
-                  keyInquiryQuestions = getSectionByAliases("sec3", "inquiry", "keyInquiryQuestions"),
-                  coreCompetencies = getSectionByAliases("sec2", "competencies", "coreCompetencies"),
+                  specificOutcomes = getSectionByAliases("Specific Learning Outcomes", "Outcomes", "sec1", "outcomes", "specificOutcomes"),
+                  keyInquiryQuestions = getSectionByAliases("Key Inquiry Question", "Inquiry", "sec2", "sec3", "inquiry", "keyInquiryQuestions"),
+                  coreCompetencies = getSectionByAliases("Core Competencies", "Competencies", "sec3", "sec2", "competencies", "coreCompetencies"),
                   values = "Responsibility, Unity",
                   pcis = "Life skills",
-                  learningResources = getSectionByAliases("sec4", "resources", "learningResources"),
-                  organizationOfLearning = getSectionByAliases("sec5", "organization"),
-                  introduction = getSectionByAliases("sec6", "introduction", "intro"),
-                  lessonDevelopment = getSectionByAliases("sec7", "development", "lessonDevelopment"),
-                  conclusion = getSectionByAliases("sec8", "conclusion"),
-                  extendedActivity = getSectionByAliases("sec9", "extended"),
-                  reflection = getSectionByAliases("sec10", "reflection"),
+                  learningResources = getSectionByAliases("Learning Resources", "Resources", "sec6", "sec4", "resources", "learningResources"),
+                  organizationOfLearning = getSectionByAliases("Organization of Learning", "Organisation of Learning", "sec13", "sec5", "organization"),
+                  introduction = getSectionByAliases("Introduction", "sec7", "sec6", "introduction", "intro"),
+                  lessonDevelopment = getSectionByAliases("Lesson Development", "Development", "sec8", "sec7", "development", "lessonDevelopment"),
+                  conclusion = getSectionByAliases("Conclusion", "sec9", "sec8", "conclusion"),
+                  extendedActivity = getSectionByAliases("Extended Activity", "Extended Activities", "sec10", "sec9", "extended"),
+                  reflection = getSectionByAliases("Reflection", "Teacher's Reflection", "sec12", "sec10", "reflection"),
                   updatedAt = System.currentTimeMillis(),
                   extraContent = contentMap,
+                  schemeId = schemeId,
+                  schemeLocalId = schemeLocalId,
                 ),
                 isUpdate,
                 contentMap,
               )
               editingId = null
               topic = ""
+              strand = ""
+              schemeId = ""
+              schemeLocalId = ""
+              planWeek = 1
+              planLesson = 1
               sections.forEach { sectionValues[it.key] = "" }
               hintNote = null
             },
@@ -321,38 +363,37 @@ fun LessonPlansScreen(
               style = MaterialTheme.typography.bodySmall,
               color = extra.muted,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              text = "Wk ${plan.week}, Lesson ${plan.lessonNumber}" +
+                (if (plan.schemeId.isNotBlank() || plan.schemeLocalId.isNotBlank()) " · linked to scheme" else "") +
+                (if (!plan.synced) " · pending sync" else ""),
+              style = MaterialTheme.typography.labelSmall,
+              color = extra.me,
+            )
+            Row(
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
               OutlinedButton(onClick = {
                 editingId = plan.id
                 learningArea = plan.learningArea
                 lessonDate = plan.date.ifBlank { lessonDate }
                 topic = plan.topic.ifBlank { plan.subStrand }
                 strand = plan.strand
-                sections.forEach { sec ->
-                  val fromExtra = plan.extraContent[sec.key]
-                  if (!fromExtra.isNullOrBlank()) {
-                    sectionValues[sec.key] = fromExtra
-                  }
-                }
-                if (plan.extraContent.isEmpty()) {
-                  setSectionByAliases(plan.specificOutcomes, "sec1", "outcomes")
-                  setSectionByAliases(plan.coreCompetencies, "sec2", "competencies")
-                  setSectionByAliases(plan.keyInquiryQuestions, "sec3", "inquiry")
-                  setSectionByAliases(plan.learningResources, "sec4", "resources")
-                  setSectionByAliases(plan.organizationOfLearning, "sec5", "organization")
-                  setSectionByAliases(plan.introduction, "sec6", "introduction")
-                  setSectionByAliases(plan.lessonDevelopment, "sec7", "development")
-                  setSectionByAliases(plan.conclusion, "sec8", "conclusion")
-                  setSectionByAliases(plan.extendedActivity, "sec9", "extended")
-                  setSectionByAliases(plan.reflection, "sec10", "reflection")
-                }
+                schemeId = plan.schemeId
+                schemeLocalId = plan.schemeLocalId
+                planWeek = plan.week
+                planLesson = plan.lessonNumber
+                planTerm = plan.term
+                sections.forEach { sec -> sectionValues[sec.key] = plan.valueForSection(sec) }
               }) { Text("Edit") }
+              OutlinedButton(onClick = { onRecordPlan(plan) }) { Text("Record work") }
               HighlighterButton(
                 text = "Export PDF",
                 onClick = { onExportPdf(plan) },
                 icon = Icons.Filled.PictureAsPdf,
               )
-              Spacer(Modifier.weight(1f))
+              Spacer(Modifier.width(4.dp))
               IconButton(onClick = { onDeletePlan(plan.id) }) {
                 Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = extra.be)
               }
@@ -364,12 +405,34 @@ fun LessonPlansScreen(
   }
 
   if (showKicdPicker) {
-    val pickerDesigns = (state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns).distinctBy { it.id }
+    val pickerDesigns = remember(
+      state.remoteKicdDesigns,
+      state.bundledKicdDesigns,
+      state.selectedGrade,
+      learningArea,
+    ) {
+      val all = (state.bundledKicdDesigns + state.remoteKicdDesigns + KicdCurriculumRepository.kicdDesigns)
+        .distinctBy { it.id }
+      val subjectId = KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, learningArea)
+      all.filter { d ->
+        d.grade.equals(state.selectedGrade, ignoreCase = true) &&
+          KicdCurriculumRepository.subjectIdForDesign(d.grade, d.subjectId, d.learningArea) == subjectId
+      }.ifEmpty {
+        all.filter { it.grade.equals(state.selectedGrade, ignoreCase = true) }
+      }
+    }
     AlertDialog(
       onDismissRequest = { showKicdPicker = false },
       title = { Text("Fill from KICD Design") },
       text = {
         Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (pickerDesigns.isEmpty()) {
+              Text(
+                "No KICD templates found for $learningArea · ${state.selectedGrade}.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = extra.muted,
+              )
+            }
           pickerDesigns.forEach { d ->
             Surface(
               color = MaterialTheme.colorScheme.background,
@@ -378,11 +441,11 @@ fun LessonPlansScreen(
                 learningArea = d.learningArea
                 strand = d.strand
                 topic = d.subStrand
-                setSectionByAliases(d.specificLearningOutcomes.joinToString("\n• ", prefix = "• "), "sec1", "outcomes", "specificOutcomes")
-                setSectionByAliases(d.coreCompetencies.joinToString(", "), "sec2", "competencies", "coreCompetencies")
-                setSectionByAliases(d.keyInquiryQuestions.joinToString("\n"), "sec3", "inquiry", "keyInquiryQuestions")
-                setSectionByAliases(d.suggestedResources.joinToString(", "), "sec4", "resources", "learningResources")
-                setSectionByAliases(d.learningExperiences.joinToString("\n"), "sec7", "development", "lessonDevelopment")
+                setSectionByAliases(d.specificLearningOutcomes.joinToString("\n• ", prefix = "• "), "Specific Learning Outcomes", "Outcomes", "sec1", "outcomes", "specificOutcomes")
+                setSectionByAliases(d.coreCompetencies.joinToString(", "), "Core Competencies", "Competencies", "sec3", "competencies", "coreCompetencies")
+                setSectionByAliases(d.keyInquiryQuestions.joinToString("\n"), "Key Inquiry Question", "Inquiry", "sec2", "inquiry", "keyInquiryQuestions")
+                setSectionByAliases(d.suggestedResources.joinToString(", "), "Learning Resources", "Resources", "sec6", "sec4", "resources", "learningResources")
+                setSectionByAliases(d.learningExperiences.joinToString("\n"), "Lesson Development", "Development", "sec8", "sec7", "development", "lessonDevelopment")
                 showKicdPicker = false
               },
               modifier = Modifier.fillMaxWidth(),
@@ -406,6 +469,7 @@ fun RecordsOfWorkScreen(
   onSaveRecord: (RecordOfWork, isUpdate: Boolean) -> Unit,
   onDeleteRecord: (String) -> Unit,
   onExportPdf: (grade: String, learningArea: String) -> Unit,
+  onClearRecordPrefill: () -> Unit,
   onBackToServices: () -> Unit,
 ) {
   val session = state.session ?: return
@@ -421,6 +485,12 @@ fun RecordsOfWorkScreen(
   var editingId by remember { mutableStateOf<String?>(null) }
   var learningArea by remember(state.selectedGrade) { mutableStateOf(gradeSubjects.firstOrNull()?.name ?: "Mathematics") }
   var topic by remember { mutableStateOf("") }
+  var strand by remember { mutableStateOf("") }
+  var schemeId by remember { mutableStateOf("") }
+  var schemeLocalId by remember { mutableStateOf("") }
+  var lessonPlanId by remember { mutableStateOf("") }
+  var lessonPlanLocalId by remember { mutableStateOf("") }
+  var recordTerm by remember { mutableStateOf(session.currentTerm) }
   var weekText by remember { mutableStateOf("1") }
   var lessonText by remember { mutableStateOf("1") }
   var classSizeText by remember(classLearnersCount) { mutableStateOf(classLearnersCount.takeIf { it > 0 }?.toString() ?: "") }
@@ -428,6 +498,23 @@ fun RecordsOfWorkScreen(
   var absencesToday by remember { mutableStateOf("") }
   var homework by remember { mutableStateOf("") }
   var remarks by remember { mutableStateOf("") }
+
+  LaunchedEffect(state.pendingRecordPrefill) {
+    val prefill = state.pendingRecordPrefill ?: return@LaunchedEffect
+    if (prefill.learningArea.isNotBlank()) learningArea = prefill.learningArea
+    if (prefill.term.isNotBlank()) recordTerm = prefill.term
+    schemeId = prefill.schemeId
+    schemeLocalId = prefill.schemeLocalId
+    lessonPlanId = prefill.lessonPlanId
+    lessonPlanLocalId = prefill.lessonPlanLocalId
+    strand = prefill.strand
+    topic = prefill.topic.ifBlank { prefill.subStrand }
+    workCovered = prefill.workCovered.ifBlank { prefill.topic.ifBlank { prefill.subStrand } }
+    weekText = prefill.week.toString()
+    lessonText = prefill.lesson.toString()
+    if (prefill.classSize > 0) classSizeText = prefill.classSize.toString()
+    onClearRecordPrefill()
+  }
 
   val savedForClass = state.recordsOfWork.filter { state.matchesActiveClass(it.stream, it.grade) }
 
@@ -526,11 +613,11 @@ fun RecordsOfWorkScreen(
                   grade = state.selectedGrade,
                   stream = activeStream,
                   learningArea = learningArea,
-                  term = session.currentTerm,
+                  term = recordTerm.ifBlank { session.currentTerm },
                   year = session.currentYear,
                   week = weekText.toIntOrNull() ?: 1,
                   date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()),
-                  strand = topic,
+                  strand = strand.ifBlank { topic },
                   subStrand = topic,
                   workCovered = workCovered.ifBlank { "No details added" },
                   absencesToday = absencesToday,
@@ -541,11 +628,20 @@ fun RecordsOfWorkScreen(
                   topic = topic,
                   lessonNumber = lessonText.toIntOrNull() ?: 1,
                   classSize = classSizeText.toIntOrNull() ?: classLearnersCount,
+                  schemeId = schemeId,
+                  schemeLocalId = schemeLocalId,
+                  lessonPlanId = lessonPlanId,
+                  lessonPlanLocalId = lessonPlanLocalId,
                 ),
                 isUpdate,
               )
               editingId = null
               topic = ""
+              strand = ""
+              schemeId = ""
+              schemeLocalId = ""
+              lessonPlanId = ""
+              lessonPlanLocalId = ""
               workCovered = ""
               absencesToday = ""
               homework = ""
@@ -598,6 +694,12 @@ fun RecordsOfWorkScreen(
               editingId = rec.id
               learningArea = rec.learningArea
               topic = rec.topic.ifBlank { rec.subStrand }
+              strand = rec.strand
+              schemeId = rec.schemeId
+              schemeLocalId = rec.schemeLocalId
+              lessonPlanId = rec.lessonPlanId
+              lessonPlanLocalId = rec.lessonPlanLocalId
+              recordTerm = rec.term
               weekText = rec.week.toString()
               lessonText = rec.lessonNumber.toString()
               classSizeText = rec.classSize.takeIf { it > 0 }?.toString() ?: ""

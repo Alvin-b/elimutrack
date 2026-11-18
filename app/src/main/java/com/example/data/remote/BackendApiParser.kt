@@ -438,6 +438,7 @@ object BackendApiParser {
         schoolName = schoolName,
         teacherName = teacherName,
         grade = gradeVal,
+        stream = streamVal,
         learningArea = areaName,
         term = termVal,
         year = 2026,
@@ -524,6 +525,8 @@ object BackendApiParser {
             updatedAt = System.currentTimeMillis(),
             synced = true,
             extraContent = contentMap,
+            remoteId = id,
+            schemeId = o.str("schemeId"),
           )
         )
       }
@@ -576,6 +579,7 @@ object BackendApiParser {
             classSize = o.intVal("classSize", default = 0),
             schemeId = o.str("schemeId"),
             lessonPlanId = o.str("lessonPlanId"),
+            remoteId = id,
           )
         )
       }
@@ -706,6 +710,7 @@ object BackendApiParser {
             suggestedResources = (o.optJSONArray("resources") ?: JSONArray()).toStringList(),
             assessmentRubric = emptyMap(),
             sourceType = o.str("origin").ifBlank { "KICD" }.uppercase(),
+            subjectId = subId,
           )
         )
       }

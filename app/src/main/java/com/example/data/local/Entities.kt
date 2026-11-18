@@ -10,12 +10,21 @@ data class SchemeEntity(
   val schoolName: String,
   val teacherName: String,
   val grade: String,
+  val stream: String = "",
   val learningArea: String,
   val term: String,
   val year: Int,
   val rowsJson: String,
   val updatedAt: Long,
   val synced: Boolean,
+)
+
+@Entity(tableName = "lesson_plan_templates")
+data class LessonPlanTemplateEntity(
+  @PrimaryKey val id: Int = 1,
+  val name: String,
+  val sectionsJson: String,
+  val updatedAt: Long,
 )
 
 @Entity(tableName = "lesson_plans")
@@ -49,6 +58,10 @@ data class LessonPlanEntity(
   val reflection: String,
   val updatedAt: Long,
   val synced: Boolean,
+  val remoteId: String = "",
+  val schemeId: String = "",
+  val schemeLocalId: String = "",
+  val extraContentJson: String = "",
 )
 
 @Entity(tableName = "records_of_work")
@@ -72,6 +85,14 @@ data class RecordOfWorkEntity(
   val teacherInitials: String,
   val updatedAt: Long,
   val synced: Boolean,
+  val topic: String = "",
+  val lessonNumber: Int = 1,
+  val classSize: Int = 0,
+  val schemeId: String = "",
+  val lessonPlanId: String = "",
+  val remoteId: String = "",
+  val schemeLocalId: String = "",
+  val lessonPlanLocalId: String = "",
 )
 
 @Entity(tableName = "learners")

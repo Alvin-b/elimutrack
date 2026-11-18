@@ -20,6 +20,12 @@ interface SchemeDao {
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsertAll(items: List<SchemeEntity>)
 
+  @Query("SELECT * FROM schemes_of_work")
+  suspend fun getAll(): List<SchemeEntity>
+
+  @Query("UPDATE schemes_of_work SET synced = 1 WHERE id = :id")
+  suspend fun markSynced(id: String)
+
   @Query("DELETE FROM schemes_of_work WHERE id = :id")
   suspend fun deleteById(id: String)
 
@@ -41,10 +47,31 @@ interface LessonPlanDao {
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsertAll(items: List<LessonPlanEntity>)
 
+  @Query("SELECT * FROM lesson_plans")
+  suspend fun getAll(): List<LessonPlanEntity>
+
+  @Query("UPDATE lesson_plans SET synced = 1, remoteId = :remoteId WHERE id = :id")
+  suspend fun markSynced(id: String, remoteId: String)
+
   @Query("DELETE FROM lesson_plans WHERE id = :id")
   suspend fun deleteById(id: String)
 
   @Query("DELETE FROM lesson_plans")
+  suspend fun deleteAll()
+}
+
+@Dao
+interface LessonPlanTemplateDao {
+  @Query("SELECT * FROM lesson_plan_templates WHERE id = 1")
+  fun observe(): Flow<LessonPlanTemplateEntity?>
+
+  @Query("SELECT * FROM lesson_plan_templates WHERE id = 1")
+  suspend fun get(): LessonPlanTemplateEntity?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsert(item: LessonPlanTemplateEntity)
+
+  @Query("DELETE FROM lesson_plan_templates")
   suspend fun deleteAll()
 }
 
@@ -61,6 +88,12 @@ interface RecordOfWorkDao {
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsertAll(items: List<RecordOfWorkEntity>)
+
+  @Query("SELECT * FROM records_of_work")
+  suspend fun getAll(): List<RecordOfWorkEntity>
+
+  @Query("UPDATE records_of_work SET synced = 1, remoteId = :remoteId WHERE id = :id")
+  suspend fun markSynced(id: String, remoteId: String)
 
   @Query("DELETE FROM records_of_work WHERE id = :id")
   suspend fun deleteById(id: String)
