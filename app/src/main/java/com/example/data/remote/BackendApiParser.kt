@@ -130,6 +130,53 @@ object BackendApiParser {
     }
   }
 
+  private fun extractStringListFromAny(obj: JSONObject, vararg keys: String): List<String>? {
+    for (k in keys) {
+      if (!obj.has(k) || obj.isNull(k)) continue
+      val v = obj.opt(k) ?: continue
+      when (v) {
+        is JSONArray -> return v.toStringList()
+        is JSONObject -> {
+          val list = buildList {
+            val nestedArr = v.optJSONArray("enabled") ?: v.optJSONArray("allowed") ?: v.optJSONArray("items")
+            if (nestedArr != null) {
+              addAll(nestedArr.toStringList())
+            } else {
+              val it = v.keys()
+              while (it.hasNext()) {
+                val keyName = it.next()
+                val rawVal = v.opt(keyName)
+                val enabled = when (rawVal) {
+                  is Boolean -> rawVal
+                  is Number -> rawVal.toInt() != 0
+                  is String -> rawVal.equals("true", ignoreCase = true) || rawVal == "1"
+                  else -> false
+                }
+                if (enabled) add(keyName)
+              }
+            }
+          }
+          return list
+        }
+        is String -> {
+          return v.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        }
+      }
+    }
+    return null
+  }
+
+  private fun extractStreamsArray(vararg sources: JSONObject): JSONArray {
+    val keys = listOf("streams", "classes", "assignedStreams", "allocatedClasses")
+    for (src in sources) {
+      for (k in keys) {
+        val arr = src.optJSONArray(k)
+        if (arr != null) return arr
+      }
+    }
+    return JSONArray()
+  }
+
   fun parseSession(
     raw: String,
     existingToken: String,
@@ -165,19 +212,21 @@ object BackendApiParser {
     val badgeLabel = tenantObj?.str("plan", "badge", "badgeLabel")?.uppercase()?.ifBlank { null }
       ?: "CAMPUS"
 
-    val rawServices = (root.optJSONArray("services")
-      ?: root.optJSONArray("allowedModules")
-      ?: JSONArray()).toStringList()
+    val rawServices = extractStringListFromAny(root, "services", "allowedModules", "modules", "permissions")
+      ?: extractStringListFromAny(staffObj, "services", "allowedModules", "modules", "permissions")
+      ?: extractStringListFromAny(userObj, "services", "allowedModules", "modules", "permissions")
+      ?: emptyList()
 
-    val streamsArr = root.optJSONArray("streams")
-      ?: root.optJSONArray("classes")
-      ?: JSONArray()
+    val streamsArr = extractStreamsArray(root, staffObj, userObj)
     val allocatedClasses = buildList {
       for (i in 0 until streamsArr.length()) {
         when (val el = streamsArr.opt(i)) {
           is String -> if (el.isNotBlank()) {
             val grade = KicdCurriculumRepository.extractGradeFromStream(el)
-            val suffix = el.replace(grade, "", ignoreCase = true).trim()
+            val suffix = el.replace(grade, "", ignoreCase = true)
+              .trim()
+              .trimStart('-', '–', ':')
+              .trim()
             val areas = KicdCurriculumRepository.subjectsForGrade(grade).map { it.name }
             add(
               AllocatedClass(
@@ -192,9 +241,15 @@ object BackendApiParser {
           }
           is JSONObject -> {
             val streamKey = el.str("stream", "name", "id", "className", "label")
-            val rawGrade = el.str("grade", "gradeLevel").ifBlank { KicdCurriculumRepository.extractGradeFromStream(streamKey) }
+            val explicitGrade = el.str("grade", "gradeLevel", "level")
+            val rawGrade = KicdCurriculumRepository.normalizeGrade(explicitGrade)
+              ?: KicdCurriculumRepository.extractGradeOrNull(streamKey)
+              ?: explicitGrade.ifBlank { "Grade 7" }
             val streamSuffix = el.str("streamName", "section").ifBlank {
-              streamKey.replace(rawGrade, "", ignoreCase = true).trim()
+              streamKey.replace(rawGrade, "", ignoreCase = true)
+                .trim()
+                .trimStart('-', '–', ':')
+                .trim()
             }
             val areas = el.optJSONArray("learningAreas")?.toStringList()?.ifEmpty { null }
               ?: KicdCurriculumRepository.subjectsForGrade(rawGrade).map { it.name }
@@ -252,10 +307,12 @@ object BackendApiParser {
   }
 
   fun parseSingleLearner(o: JSONObject, fallbackStream: String): Learner {
-    val streamVal = o.str("stream").ifBlank { fallbackStream }
-    val gradeVal = o.str("gradeLevel", "grade").ifBlank {
-      KicdCurriculumRepository.extractGradeFromStream(streamVal)
-    }
+    val streamVal = o.str("stream", "className", "class", "section").ifBlank { fallbackStream }
+    val rawGrade = o.str("gradeLevel", "grade", "level", "classLevel")
+    val fallbackGrade = KicdCurriculumRepository.extractGradeOrNull(fallbackStream) ?: "Grade 7"
+    val gradeVal = KicdCurriculumRepository.normalizeGrade(rawGrade)
+      ?: KicdCurriculumRepository.extractGradeOrNull(streamVal)
+      ?: rawGrade.ifBlank { fallbackGrade }
     return Learner(
       id = o.str("id", "learnerId"),
       admissionNo = o.str("admissionNo"),
@@ -402,12 +459,12 @@ object BackendApiParser {
     fallbackTerm: String,
   ): List<SchemeOfWork> {
     val arr = extractArray(raw, "rows", "schemes")
-    val fallbackGrade = KicdCurriculumRepository.extractGradeFromStream(fallbackStream)
+    val fallbackGrade = KicdCurriculumRepository.extractGradeOrNull(fallbackStream) ?: "Grade 7"
     val rowList = buildList {
       for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
         val streamVal = o.str("stream").ifBlank { fallbackStream }
-        val gradeVal = KicdCurriculumRepository.extractGradeFromStream(streamVal).ifBlank { fallbackGrade }
+        val gradeVal = KicdCurriculumRepository.extractGradeOrNull(streamVal) ?: fallbackGrade
         val subjectId = o.str("subjectId", "learningArea")
         val areaName = KicdCurriculumRepository.areaNameForSubjectId(subjectId)
         val termVal = o.str("term").ifBlank { fallbackTerm }
@@ -467,13 +524,14 @@ object BackendApiParser {
       }
     }
 
+    val fallbackGrade = KicdCurriculumRepository.extractGradeOrNull(fallbackStream) ?: "Grade 7"
     val plansArr = root.optJSONArray("plans") ?: extractArray(raw, "plans")
     val plans = buildList {
       for (i in 0 until plansArr.length()) {
         val o = plansArr.optJSONObject(i) ?: continue
         val id = o.str("id").ifBlank { "lp_$i" }
         val streamVal = o.str("stream").ifBlank { fallbackStream }
-        val gradeVal = KicdCurriculumRepository.extractGradeFromStream(streamVal)
+        val gradeVal = KicdCurriculumRepository.extractGradeOrNull(streamVal) ?: fallbackGrade
         val subjectId = o.str("subjectId", "learningArea")
         val areaName = KicdCurriculumRepository.areaNameForSubjectId(subjectId)
         val contentObj = o.optJSONObject("content") ?: JSONObject()
@@ -511,9 +569,9 @@ object BackendApiParser {
             subStrand = subStrandVal,
             topic = o.str("topic").ifBlank { subStrandVal },
             specificOutcomes = sec("sec1", "outcomes", "specificOutcomes"),
-            keyInquiryQuestions = sec("sec2", "inquiry", "keyInquiryQuestions"),
-            coreCompetencies = sec("sec3", "competencies", "coreCompetencies"),
-            values = sec("values", "sec4"),
+            keyInquiryQuestions = sec("sec3", "sec2", "inquiry", "keyInquiryQuestions"),
+            coreCompetencies = sec("sec2", "sec3", "competencies", "coreCompetencies"),
+            values = sec("values"),
             pcis = sec("pcis"),
             learningResources = sec("sec4", "resources", "learningResources"),
             organizationOfLearning = sec("sec5", "organization"),
@@ -542,13 +600,13 @@ object BackendApiParser {
     fallbackTerm: String,
   ): List<RecordOfWork> {
     val arr = extractArray(raw, "rows", "records", "recordwork")
-    val fallbackGrade = KicdCurriculumRepository.extractGradeFromStream(fallbackStream)
+    val fallbackGrade = KicdCurriculumRepository.extractGradeOrNull(fallbackStream) ?: "Grade 7"
     return buildList {
       for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
         val id = o.str("id").ifBlank { "rw_$i" }
         val streamVal = o.str("stream").ifBlank { fallbackStream }
-        val gradeVal = KicdCurriculumRepository.extractGradeFromStream(streamVal).ifBlank { fallbackGrade }
+        val gradeVal = KicdCurriculumRepository.extractGradeOrNull(streamVal) ?: fallbackGrade
         val subjectId = o.str("subjectId", "learningArea")
         val areaName = KicdCurriculumRepository.areaNameForSubjectId(subjectId)
         val subStrandVal = o.str("subStrand", "topic")
@@ -588,14 +646,14 @@ object BackendApiParser {
 
   fun parseProgress(raw: String, fallbackStream: String): List<LearnerProgressEntry> {
     val arr = extractArray(raw, "records", "progress")
-    val fallbackGrade = KicdCurriculumRepository.extractGradeFromStream(fallbackStream)
+    val fallbackGrade = KicdCurriculumRepository.extractGradeOrNull(fallbackStream) ?: "Grade 7"
     return buildList {
       for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
         val id = o.str("id").ifBlank { "prog_$i" }
         val learnerId = o.str("learnerId")
         val streamVal = o.str("stream").ifBlank { fallbackStream }
-        val gradeVal = KicdCurriculumRepository.extractGradeFromStream(streamVal).ifBlank { fallbackGrade }
+        val gradeVal = KicdCurriculumRepository.extractGradeOrNull(streamVal) ?: fallbackGrade
         val subjectId = o.str("subjectId")
         add(
           LearnerProgressEntry(
@@ -634,8 +692,10 @@ object BackendApiParser {
           val e = entriesArr.optJSONObject(i) ?: continue
           val pid = e.str("periodId")
           val meta = periodById[pid]
-          val streamName = e.str("stream")
-          val grade = KicdCurriculumRepository.extractGradeFromStream(streamName)
+          val streamName = e.str("stream", "className", "class")
+          val grade = KicdCurriculumRepository.extractGradeOrNull(streamName)
+            ?: KicdCurriculumRepository.extractGradeOrNull(e.str("grade", "gradeLevel"))
+            ?: ""
           val day = e.str("day").uppercase().take(3).ifBlank { "MON" }
           val subjectId = e.str("subjectId", "subject")
           val area = if (subjectId.isBlank()) meta?.label ?: "BREAK" else KicdCurriculumRepository.areaNameForSubjectId(subjectId)
@@ -662,7 +722,7 @@ object BackendApiParser {
       for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
         val streamOrGrade = o.str("grade", "stream")
-        val grade = KicdCurriculumRepository.extractGradeFromStream(streamOrGrade)
+        val grade = KicdCurriculumRepository.extractGradeOrNull(streamOrGrade) ?: ""
         val day = o.str("dayOfWeek", "day").uppercase().take(3)
         val slotIdx = o.intVal("slotIndex", "period", "slot", default = i)
         val subjectRaw = o.str("learningArea", "subjectId", "subject", "title")

@@ -102,6 +102,7 @@ fun LessonPlansScreen(
   onRecordPlan: (LessonPlan) -> Unit,
   onClearKicdPrefill: () -> Unit,
   onClearPlanPrefill: () -> Unit,
+  onShowMessage: (String) -> Unit,
   onBackToServices: () -> Unit,
 ) {
   val session = state.session ?: return
@@ -272,7 +273,10 @@ fun LessonPlansScreen(
           HighlighterButton(
             text = if (editingId == null) "Save plan" else "Update plan",
             onClick = {
-              if (topic.isBlank()) return@HighlighterButton
+              if (topic.isBlank()) {
+                onShowMessage("Enter a Topic / Sub-strand before saving.")
+                return@HighlighterButton
+              }
               val contentMap = sections.associate { it.key to (sectionValues[it.key] ?: "") }
               val isUpdate = editingId != null
               onSavePlan(
@@ -470,6 +474,7 @@ fun RecordsOfWorkScreen(
   onDeleteRecord: (String) -> Unit,
   onExportPdf: (grade: String, learningArea: String) -> Unit,
   onClearRecordPrefill: () -> Unit,
+  onShowMessage: (String) -> Unit,
   onBackToServices: () -> Unit,
 ) {
   val session = state.session ?: return
@@ -602,7 +607,10 @@ fun RecordsOfWorkScreen(
           HighlighterButton(
             text = if (editingId == null) "Save record" else "Update record",
             onClick = {
-              if (topic.isBlank()) return@HighlighterButton
+              if (topic.isBlank()) {
+                onShowMessage("Enter a Topic before saving.")
+                return@HighlighterButton
+              }
               val isUpdate = editingId != null
               val initials = session.fullName.split(" ").mapNotNull { it.firstOrNull()?.uppercaseChar() }.joinToString("")
               onSaveRecord(

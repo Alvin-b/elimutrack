@@ -76,9 +76,16 @@ fun TimetableScreen(
   val activeClass = state.activeClass
   val classDisplay = activeClass?.displayName ?: state.selectedStream.ifBlank { state.selectedGrade }
 
+  val targetGrade = KicdCurriculumRepository.normalizeGrade(state.selectedGrade) ?: state.selectedGrade
   val gradeSlots = state.timetable.filter { slot ->
-    slot.room.equals(state.selectedStream, ignoreCase = true) ||
-      slot.grade.equals(state.selectedGrade, ignoreCase = true)
+    val slotGrade = KicdCurriculumRepository.normalizeGrade(slot.grade) ?: slot.grade
+    state.matchesActiveClass(slot.room, slot.grade) ||
+      (slot.room.isBlank() && slotGrade.equals(targetGrade, ignoreCase = true))
+  }.ifEmpty {
+    state.timetable.filter { slot ->
+      val slotGrade = KicdCurriculumRepository.normalizeGrade(slot.grade) ?: slot.grade
+      slotGrade.equals(targetGrade, ignoreCase = true)
+    }
   }
 
   val level = KicdCurriculumRepository.levelForGrade(state.selectedGrade)

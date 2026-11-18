@@ -25,6 +25,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -35,6 +38,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,8 +46,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import com.example.data.curriculum.KicdCurriculumRepository
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -70,6 +76,7 @@ fun HomeScreen(
   state: TeacherUiState,
   onNavigateModule: (TeacherModule) -> Unit,
   onSelectClassAndRegister: (streamKey: String) -> Unit,
+  onOpenServices: () -> Unit,
   onRefresh: () -> Unit,
 ) {
   val session = state.session ?: return
@@ -86,8 +93,13 @@ fun HomeScreen(
     else -> "MON"
   }
   val todayDateLabel = SimpleDateFormat("EEEE d MMMM", Locale.getDefault()).format(Date())
+  val normalizedTargetGrade = KicdCurriculumRepository.normalizeGrade(state.selectedGrade) ?: state.selectedGrade
   val todayLessons = state.timetable
-    .filter { it.grade == state.selectedGrade && it.dayOfWeek == dayCode && !it.isBreak }
+    .filter {
+      val slotGrade = KicdCurriculumRepository.normalizeGrade(it.grade) ?: it.grade
+      it.dayOfWeek == dayCode && !it.isBreak &&
+        (state.matchesActiveClass(it.room, it.grade) || slotGrade.equals(normalizedTargetGrade, ignoreCase = true))
+    }
     .sortedBy { it.slotIndex }
   val nextLesson = todayLessons.firstOrNull()
 
@@ -104,17 +116,20 @@ fun HomeScreen(
     ?: if (classMarks.isEmpty()) "--" else "${classMarks.map { it.score }.average().toInt()}"
   val feesOutstanding = summary?.feeOutstandingKes ?: classLearners.sumOf { it.feeBalanceKes }
   val plansCount = summary?.plansCount ?: state.lessonPlans.count { state.matchesActiveClass(it.stream, it.grade) }
-  val obsCount = summary?.observationsCount ?: state.observations.count { it.grade == state.selectedGrade }
+  val obsCount = summary?.observationsCount ?: state.observations.count { state.matchesActiveClass("", it.grade) }
+  val serviceModulesCount = allowed.count { it != TeacherModule.DASHBOARD }
 
   val quickActions = listOf(
     Triple(TeacherModule.ATTENDANCE, "Take the register", TeacherModule.ATTENDANCE),
     Triple(TeacherModule.MARKSBOOK, "Enter marks", TeacherModule.MARKSBOOK),
-    Triple(TeacherModule.LESSON_PLANS, "Write a lesson plan", TeacherModule.LESSON_PLANS),
-    Triple(TeacherModule.OBSERVATIONS, "Add an observation", TeacherModule.OBSERVATIONS),
     Triple(TeacherModule.SCHEMES, "Schemes of work", TeacherModule.SCHEMES),
+    Triple(TeacherModule.LESSON_PLANS, "Write a lesson plan", TeacherModule.LESSON_PLANS),
     Triple(TeacherModule.RECORD_OF_WORK, "Record work covered", TeacherModule.RECORD_OF_WORK),
-    Triple(TeacherModule.PROGRESS, "Record progress", TeacherModule.PROGRESS),
-  ).filter { it.first in allowed }.take(4)
+    Triple(TeacherModule.PROGRESS, "Learner progress", TeacherModule.PROGRESS),
+    Triple(TeacherModule.LEARNERS, "Class learners", TeacherModule.LEARNERS),
+    Triple(TeacherModule.TIMETABLE, "Class timetable", TeacherModule.TIMETABLE),
+    Triple(TeacherModule.OBSERVATIONS, "Add an observation", TeacherModule.OBSERVATIONS),
+  ).filter { it.first in allowed }.take(6)
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -254,10 +269,30 @@ fun HomeScreen(
       }
     }
 
-    // Do Now Quick Actions (2x2)
+    // Do Now Quick Actions
     if (quickActions.isNotEmpty()) {
       item {
-        Text("Do now", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text("Do now", style = MaterialTheme.typography.titleMedium)
+          Surface(
+            color = MaterialTheme.colorScheme.background,
+            border = BorderStroke(1.dp, extra.line),
+            shape = RoundedCornerShape(99.dp),
+            modifier = Modifier
+              .clip(RoundedCornerShape(99.dp))
+              .clickable(onClick = onOpenServices),
+          ) {
+            Text(
+              text = "All services ($serviceModulesCount)",
+              style = MaterialTheme.typography.labelMedium,
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+          }
+        }
         Spacer(Modifier.height(6.dp))
         FlowRow(
           maxItemsInEachRow = 2,
@@ -420,10 +455,13 @@ private fun NotebookStatCard(
 fun ServicesHubScreen(
   state: TeacherUiState,
   onNavigateModule: (TeacherModule) -> Unit,
+  onRefreshPermissions: () -> Unit,
 ) {
   val session = state.session ?: return
   val extra = LocalElimuColors.current
   val allowed = session.allowedModules
+  var lockedDialogModule by remember { mutableStateOf<TeacherModule?>(null) }
+
   val grouped = listOf(
     ServiceGroup.TEACHING,
     ServiceGroup.LEARNERS,
@@ -434,6 +472,9 @@ fun ServicesHubScreen(
     if (items.isEmpty()) null else grp to items
   }
   val enabledCount = grouped.sumOf { it.second.size }
+  val lockedModules = TeacherModule.entries.filter {
+    it != TeacherModule.DASHBOARD && it !in allowed
+  }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -443,7 +484,18 @@ fun ServicesHubScreen(
     item {
       SubScreenHeader(
         title = "Services",
-        subtitle = "$enabledCount switched on by your admin",
+        subtitle = "$enabledCount of ${enabledCount + lockedModules.size} modules switched on by admin",
+        action = {
+          OutlinedButton(
+            onClick = onRefreshPermissions,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            modifier = Modifier.height(40.dp).testTag("refresh_services_button"),
+          ) {
+            Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Refresh")
+          }
+        },
       )
     }
 
@@ -455,12 +507,16 @@ fun ServicesHubScreen(
           border = BorderStroke(1.dp, extra.line),
           modifier = Modifier.fillMaxWidth(),
         ) {
-          Text(
-            text = "No services yet. Your admin chooses what appears here.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = extra.muted,
-            modifier = Modifier.padding(18.dp),
-          )
+          Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              text = "No teacher modules are enabled for your account yet. Your school admin controls which modules appear under Staff & Access.",
+              style = MaterialTheme.typography.bodyMedium,
+              color = extra.muted,
+            )
+            OutlinedButton(onClick = onRefreshPermissions) {
+              Text("Refresh permissions")
+            }
+          }
         }
       }
     } else {
@@ -516,6 +572,110 @@ fun ServicesHubScreen(
         }
       }
     }
+
+    if (lockedModules.isNotEmpty()) {
+      item(key = "locked_modules_section") {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+          Text(
+            text = "Off in Staff & Access (${lockedModules.size})",
+            style = MaterialTheme.typography.titleMedium,
+          )
+          Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, extra.line),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(
+              text = "These modules belong to ElimuTrack but are switched off for your account. Ask your school administrator to enable them in Staff & Access, then tap Refresh above.",
+              style = MaterialTheme.typography.bodySmall,
+              color = extra.muted,
+              modifier = Modifier.padding(12.dp),
+            )
+          }
+          FlowRow(
+            maxItemsInEachRow = 2,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            lockedModules.forEach { mod ->
+              Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, extra.line),
+                modifier = Modifier
+                  .weight(1f)
+                  .alpha(0.65f)
+                  .clip(RoundedCornerShape(14.dp))
+                  .clickable { lockedDialogModule = mod }
+                  .testTag("locked_service_tile_${mod.key}"),
+              ) {
+                Column(
+                  modifier = Modifier.padding(12.dp),
+                  verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Icon(
+                      imageVector = moduleIcon(mod),
+                      contentDescription = mod.label,
+                      tint = extra.muted,
+                      modifier = Modifier.size(20.dp),
+                    )
+                    Icon(
+                      imageVector = Icons.Filled.Lock,
+                      contentDescription = "Locked by admin",
+                      tint = extra.muted,
+                      modifier = Modifier.size(16.dp),
+                    )
+                  }
+                  Text(mod.label, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                  Text(
+                    text = "Disabled by admin",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = extra.muted,
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  lockedDialogModule?.let { mod ->
+    AlertDialog(
+      onDismissRequest = { lockedDialogModule = null },
+      icon = { Icon(Icons.Filled.Lock, contentDescription = null, tint = extra.muted) },
+      title = { Text("${mod.label} is turned off") },
+      text = {
+        Text(
+          "${mod.label} (${mod.description.lowercase()}) is currently restricted in Staff & Access for ${session.fullName}. " +
+            "Ask your school administrator to switch on '${mod.key}' for your staff account, then tap Refresh.",
+          style = MaterialTheme.typography.bodyMedium,
+        )
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            lockedDialogModule = null
+            onRefreshPermissions()
+          },
+        ) {
+          Text("Refresh now")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { lockedDialogModule = null }) {
+          Text("Close")
+        }
+      },
+    )
   }
 }
 
@@ -524,7 +684,6 @@ fun MeScreen(
   state: TeacherUiState,
   onToggleDarkMode: (Boolean) -> Unit,
   onChangeLogin: (username: String, currentPassword: String, newPassword: String) -> Unit,
-  onSaveServerUrl: (String) -> Unit,
   onSyncNow: () -> Unit,
   onLogout: () -> Unit,
 ) {
@@ -533,7 +692,6 @@ fun MeScreen(
   var username by remember(session.username) { mutableStateOf(session.username) }
   var currentPassword by remember { mutableStateOf("") }
   var newPassword by remember { mutableStateOf("") }
-  var serverUrl by remember(session.backendUrl) { mutableStateOf(session.backendUrl) }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -679,24 +837,10 @@ fun MeScreen(
             verticalAlignment = Alignment.CenterVertically,
           ) {
             Column(modifier = Modifier.weight(1f)) {
-              Text("Sync with server", style = MaterialTheme.typography.titleSmall)
-              Text(session.backendUrl, style = MaterialTheme.typography.labelSmall, color = extra.muted)
+              Text("Sync data", style = MaterialTheme.typography.titleSmall)
+              Text("Update learners, marks, and lessons", style = MaterialTheme.typography.labelSmall, color = extra.muted)
             }
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = extra.muted)
-          }
-          OutlinedTextField(
-            value = serverUrl,
-            onValueChange = { serverUrl = it },
-            label = { Text("School server URL") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-          )
-          OutlinedButton(
-            onClick = { onSaveServerUrl(serverUrl) },
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth(),
-          ) {
-            Text("Save server URL")
           }
         }
       }

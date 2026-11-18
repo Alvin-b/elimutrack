@@ -178,9 +178,7 @@ fun AttendanceScreen(
   var rollCallStartIndex by remember { mutableIntStateOf(0) }
 
   LaunchedEffect(state.selectedStream, selectedDate) {
-    if (state.selectedStream.isNotBlank()) {
-      onFetchAttendanceForDay(selectedDate)
-    }
+    onFetchAttendanceForDay(selectedDate)
   }
 
   val gradeAttendanceByKey = remember(state.attendance, state.selectedStream, state.selectedGrade) {
@@ -1010,7 +1008,7 @@ fun EmptyClassRosterCard(
       Icon(Icons.Filled.Groups, contentDescription = null, tint = extra.navy, modifier = Modifier.size(38.dp))
       Text("No learners found in $classLabel", style = MaterialTheme.typography.titleMedium)
       Text(
-        text = "Pull the latest roster from your school server, or add a learner from the Learners module if permitted.",
+        text = "Refresh to load your latest class list, or add a learner from the Learners module if permitted.",
         style = MaterialTheme.typography.bodySmall,
         color = extra.muted,
         textAlign = TextAlign.Center,

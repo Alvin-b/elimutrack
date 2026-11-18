@@ -38,19 +38,44 @@ enum class TeacherModule(
   WHATSAPP("whatsapp", "WhatsApp", "WhatsApp", "Messages to guardians", ServiceGroup.SCHOOL);
 
   companion object {
-    fun fromKey(key: String): TeacherModule? = when (key.trim().lowercase().replace("-", "_")) {
-      "recordwork", "record_of_work", "records_of_work" -> RECORD_OF_WORK
-      "kicd", "kicd_designs" -> KICD_DESIGNS
-      "resources", "approved_resources" -> KICD_DESIGNS
-      "reportcards", "report_cards", "reports" -> REPORT_CARDS
-      "marks", "marksbook" -> MARKSBOOK
-      "fees", "fee_payments", "payments" -> FEE_PAYMENTS
-      "lessonplans", "lesson_plans" -> LESSON_PLANS
-      "register", "attendance" -> ATTENDANCE
-      "observe", "observations" -> OBSERVATIONS
-      "today", "dashboard" -> DASHBOARD
-      else -> entries.firstOrNull { it.key.equals(key.trim().replace("-", "_"), ignoreCase = true) }
+    fun fromKey(key: String): TeacherModule? {
+      val trimmed = key.trim()
+      if (trimmed.isEmpty()) return null
+      // Insert underscores before camelCase humps, then lowercase and collapse separators
+      val snake = trimmed
+        .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+        .lowercase()
+        .replace(Regex("[\\s\\-]+"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
+      val compact = snake.replace("_", "")
+      return when (compact) {
+        "dashboard", "today", "home", "overview" -> DASHBOARD
+        "lessonplans", "lessonplan", "plans", "plan" -> LESSON_PLANS
+        "schemes", "scheme", "schemesofwork", "schemeofwork" -> SCHEMES
+        "timetable", "schedule" -> TIMETABLE
+        "recordwork", "recordofwork", "recordsofwork", "recordswork", "record", "records" -> RECORD_OF_WORK
+        "kicd", "kicddesigns", "kicddesign", "curriculum", "curriculumdesigns", "resources", "approvedresources" -> KICD_DESIGNS
+        "learners", "learner", "students", "student", "roster", "classlist" -> LEARNERS
+        "observations", "observation", "observe" -> OBSERVATIONS
+        "progress", "learnerprogress", "studentprogress" -> PROGRESS
+        "reportcards", "reportcard", "reports", "report" -> REPORT_CARDS
+        "attendance", "register", "rollcall" -> ATTENDANCE
+        "marksbook", "markbook", "marks", "scores", "assessments" -> MARKSBOOK
+        "broadsheet", "broadsheets" -> BROADSHEET
+        "pathways", "pathway" -> PATHWAYS
+        "feepayments", "feepayment", "fees", "fee", "payments", "payment" -> FEE_PAYMENTS
+        "whatsapp", "messages", "guardianmessages" -> WHATSAPP
+        else -> entries.firstOrNull {
+          it.key.equals(snake, ignoreCase = true) ||
+            it.key.replace("_", "").equals(compact, ignoreCase = true)
+        }
+      }
     }
+
+    val rosterDependentModules: Set<TeacherModule> = setOf(
+      LEARNERS, ATTENDANCE, MARKSBOOK, OBSERVATIONS, PROGRESS, REPORT_CARDS, BROADSHEET, FEE_PAYMENTS, WHATSAPP, PATHWAYS
+    )
 
     val defaultTeacherModules: Set<TeacherModule> = entries.toSet()
   }

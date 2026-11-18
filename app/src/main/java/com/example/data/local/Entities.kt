@@ -61,7 +61,7 @@ data class LessonPlanEntity(
   val remoteId: String = "",
   val schemeId: String = "",
   val schemeLocalId: String = "",
-  val extraContentJson: String = "",
+  val extraContentJson: String = "{}",
 )
 
 @Entity(tableName = "records_of_work")
@@ -85,7 +85,7 @@ data class RecordOfWorkEntity(
   val teacherInitials: String,
   val updatedAt: Long,
   val synced: Boolean,
-  val topic: String = "",
+  val topic: String = subStrand,
   val lessonNumber: Int = 1,
   val classSize: Int = 0,
   val schemeId: String = "",

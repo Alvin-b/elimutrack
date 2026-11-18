@@ -96,20 +96,55 @@ data class TeacherUiState(
 
   fun matchesActiveClass(streamValue: String, gradeValue: String): Boolean {
     val active = activeClass
+    val itemNormStream = normClass(streamValue)
+    val itemNormGrade = (KicdCurriculumRepository.normalizeGrade(gradeValue)
+      ?: KicdCurriculumRepository.extractGradeOrNull(streamValue)
+      ?: gradeValue).trim()
+
     if (active != null) {
-      if (streamValue.isNotBlank()) {
-        return streamValue.equals(active.streamKey, ignoreCase = true) ||
-          streamValue.equals(active.displayName, ignoreCase = true) ||
-          (active.stream.isNotBlank() && streamValue.equals(active.stream, ignoreCase = true) && gradeValue == active.grade)
+      val activeNormGrade = (KicdCurriculumRepository.normalizeGrade(active.grade) ?: active.grade).trim()
+      if (itemNormStream.isNotBlank()) {
+        if (itemNormStream == normClass(active.streamKey) || itemNormStream == normClass(active.displayName)) {
+          return true
+        }
+        if (active.stream.isNotBlank()) {
+          val activeSuffix = normClass(active.stream)
+          if (itemNormStream == activeSuffix &&
+            (itemNormGrade.isBlank() || itemNormGrade.equals(activeNormGrade, ignoreCase = true))
+          ) {
+            return true
+          }
+          // Handle cases where streamValue is "East" or "Grade 4 - East" vs active "Grade 4 East"
+          if (itemNormStream.endsWith(" $activeSuffix") &&
+            (itemNormGrade.isBlank() || itemNormGrade.equals(activeNormGrade, ignoreCase = true))
+          ) {
+            return true
+          }
+        } else {
+          // Assigned class has no stream suffix (e.g. "Grade 7"): match any learner/record in that grade
+          if (itemNormGrade.equals(activeNormGrade, ignoreCase = true) ||
+            itemNormStream.startsWith(normClass(activeNormGrade))
+          ) {
+            return true
+          }
+        }
+        return false
       }
-      return gradeValue == active.grade
+      return itemNormGrade.equals(activeNormGrade, ignoreCase = true)
     }
-    return if (selectedStream.isNotBlank() && streamValue.isNotBlank()) {
-      streamValue.equals(selectedStream, ignoreCase = true)
-    } else {
-      gradeValue == selectedGrade
+
+    if (selectedStream.isBlank() && session?.allocatedClasses.isNullOrEmpty()) {
+      return true
     }
+    if (selectedStream.isNotBlank() && itemNormStream.isNotBlank()) {
+      if (itemNormStream == normClass(selectedStream)) return true
+    }
+    val selectedNormGrade = (KicdCurriculumRepository.normalizeGrade(selectedGrade) ?: selectedGrade).trim()
+    return itemNormGrade.equals(selectedNormGrade, ignoreCase = true)
   }
+
+  private fun normClass(raw: String): String =
+    raw.trim().lowercase().replace(Regex("[\\s\\-_]+"), " ")
 }
 
 class TeacherViewModel(
@@ -277,10 +312,18 @@ class TeacherViewModel(
     val resolvedStream = session?.allocatedClasses?.firstOrNull {
       it.streamKey.equals(ctrl.stream, ignoreCase = true) ||
         it.displayName.equals(ctrl.stream, ignoreCase = true)
-    }?.streamKey ?: session?.allocatedClasses?.firstOrNull()?.streamKey ?: ctrl.stream
+    }?.streamKey
+      ?: session?.allocatedClasses?.firstOrNull()?.streamKey
+      ?: ctrl.stream.ifBlank { cls.learners.firstOrNull()?.stream.orEmpty() }
     val resolvedGrade = session?.allocatedClasses?.firstOrNull {
       it.streamKey.equals(resolvedStream, ignoreCase = true)
-    }?.grade ?: KicdCurriculumRepository.extractGradeFromStream(resolvedStream)
+    }?.grade
+      ?: cls.learners.firstOrNull {
+        resolvedStream.isNotBlank() && it.stream.equals(resolvedStream, ignoreCase = true)
+      }?.grade?.let { KicdCurriculumRepository.normalizeGrade(it) ?: it }
+      ?: KicdCurriculumRepository.extractGradeOrNull(resolvedStream)
+      ?: cls.learners.firstOrNull()?.grade?.let { KicdCurriculumRepository.normalizeGrade(it) ?: it }
+      ?: "Grade 7"
 
     val pendingUploads = core.schemes.count { !it.synced } +
       core.plans.count { !it.synced } +
@@ -361,9 +404,23 @@ class TeacherViewModel(
   }
 
   private fun refreshModuleExtrasIfNeeded(module: TeacherModule) {
-    val stream = uiState.value.selectedStream.ifBlank { return }
+    val stream = uiState.value.selectedStream
     viewModelScope.launch {
+      if (module in TeacherModule.rosterDependentModules && uiState.value.learners.isEmpty()) {
+        repository.fetchLearners(stream)
+      }
       when (module) {
+        TeacherModule.LEARNERS -> {
+          repository.fetchLearners(stream).onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.ATTENDANCE -> {
+          repository.fetchLearners(stream)
+          val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+          repository.fetchAttendance(stream, today).onFailure { handleApiFailure(it, silent = true, deniedModule = module) }
+        }
+        TeacherModule.MARKSBOOK, TeacherModule.REPORT_CARDS, TeacherModule.BROADSHEET, TeacherModule.PATHWAYS -> {
+          repository.fetchMarks(stream).onFailure { handleApiFailure(it, silent = true, deniedModule = TeacherModule.MARKSBOOK) }
+        }
         TeacherModule.LESSON_PLANS -> {
           repository.fetchLessonPlans(stream).onSuccess { (tpl, _) ->
             if (tpl.isNotEmpty()) lessonPlanTemplateFlow.value = tpl
@@ -531,6 +588,10 @@ class TeacherViewModel(
 
   // --- Authentication & Session Management ---
 
+  fun login(username: String, password: String) {
+    loginWithBackend(TeacherSession.DEFAULT_BACKEND_URL, username, password)
+  }
+
   fun loginWithBackend(backendUrl: String, username: String, password: String) {
     if (username.isBlank() || password.isBlank()) {
       loginErrorFlow.value = "Enter your username and password."
@@ -542,7 +603,7 @@ class TeacherViewModel(
       val result = repository.loginToBackend(backendUrl, username, password)
       isLoggingInFlow.value = false
       result.onFailure { err ->
-        loginErrorFlow.value = err.message ?: "Unable to connect to school server."
+        loginErrorFlow.value = err.message ?: "Unable to sign in. Check your connection and try again."
       }.onSuccess { session ->
         ensureValidSelectedStream(session)
         snackbarFlow.value = "Signed in as ${session.fullName}"
@@ -597,19 +658,34 @@ class TeacherViewModel(
   }
 
   fun refreshActiveStream(showToast: Boolean = false) {
-    val session = uiState.value.session ?: return
-    if (session.mustChangePassword) return
-    val stream = uiState.value.selectedStream.ifBlank {
-      session.allocatedClasses.firstOrNull()?.streamKey ?: return
-    }
+    val initialSession = uiState.value.session ?: return
+    if (initialSession.mustChangePassword) return
     viewModelScope.launch {
       syncStatusFlow.value = syncStatusFlow.value.copy(isSyncing = true, isError = false)
+      val activeSession = if (showToast) {
+        repository.verifySessionOnLaunch().getOrElse { err ->
+          syncStatusFlow.value = syncStatusFlow.value.copy(isSyncing = false, lastMessage = err.message, isError = true)
+          handleApiFailure(err)
+          return@launch
+        } ?: initialSession
+      } else {
+        initialSession
+      }
+      if (activeSession.mustChangePassword) {
+        syncStatusFlow.value = syncStatusFlow.value.copy(isSyncing = false)
+        return@launch
+      }
+      ensureValidSelectedStream(activeSession)
+      val stream = selectedStreamFlow.value.ifBlank {
+        activeSession.allocatedClasses.firstOrNull()?.streamKey
+          ?: uiState.value.selectedStream
+      }
       val res = repository.refreshAllForStream(stream)
       res.onSuccess { summary ->
         if (summary != null) {
           dashboardSummaryFlow.value = summary
         }
-        val allowed = session.allowedModules
+        val allowed = activeSession.allowedModules
         if (TeacherModule.LESSON_PLANS in allowed) {
           repository.fetchLessonPlans(stream).onSuccess { (tpl, _) ->
             if (tpl.isNotEmpty()) lessonPlanTemplateFlow.value = tpl
@@ -623,13 +699,14 @@ class TeacherViewModel(
         if (TeacherModule.WHATSAPP in allowed) {
           repository.fetchWhatsApp()
         }
+        val label = stream.ifBlank { "account" }
         syncStatusFlow.value = syncStatusFlow.value.copy(
           isSyncing = false,
-          lastMessage = "Synced $stream",
+          lastMessage = "Synced $label",
           isError = false,
         )
         if (showToast) {
-          snackbarFlow.value = "Synced $stream"
+          snackbarFlow.value = "Synced $label"
         }
       }.onFailure { err ->
         syncStatusFlow.value = syncStatusFlow.value.copy(
@@ -643,7 +720,7 @@ class TeacherViewModel(
   }
 
   fun fetchAttendanceForDay(day: String) {
-    val stream = uiState.value.selectedStream.ifBlank { return }
+    val stream = uiState.value.selectedStream
     viewModelScope.launch {
       repository.fetchAttendance(stream, day).onFailure {
         handleApiFailure(it, silent = true, deniedModule = TeacherModule.ATTENDANCE)
@@ -684,7 +761,13 @@ class TeacherViewModel(
     year: Int,
     rows: List<SchemeRow>,
   ) {
-    val stream = uiState.value.selectedStream.ifBlank { return }
+    val stream = uiState.value.selectedStream.ifBlank {
+      uiState.value.learners.firstOrNull()?.stream.orEmpty()
+    }
+    if (stream.isBlank()) {
+      snackbarFlow.value = "No class stream assigned to your account yet."
+      return
+    }
     val subjectId = KicdCurriculumRepository.subjectIdForArea(grade, learningArea)
     val schemeId = existingId ?: "sch_${stream}_${learningArea}_${term}".lowercase().replace(" ", "_")
     val session = uiState.value.session
@@ -817,7 +900,13 @@ class TeacherViewModel(
       snackbarFlow.value = "Enter the learner's full name and admission number."
       return
     }
-    val stream = uiState.value.selectedStream.ifBlank { return }
+    val stream = uiState.value.selectedStream.ifBlank {
+      uiState.value.learners.firstOrNull()?.stream.orEmpty()
+    }
+    if (stream.isBlank()) {
+      snackbarFlow.value = "No class stream assigned to your account yet."
+      return
+    }
     val grade = uiState.value.selectedGrade
     viewModelScope.launch {
       repository.createLearnerRemote(
@@ -843,7 +932,13 @@ class TeacherViewModel(
     lessonSlot: String,
     statuses: Map<String, Pair<AttendanceStatus, String>>,
   ) {
-    val stream = uiState.value.selectedStream.ifBlank { return }
+    val stream = uiState.value.selectedStream.ifBlank {
+      uiState.value.learners.firstOrNull()?.stream.orEmpty()
+    }
+    if (stream.isBlank()) {
+      snackbarFlow.value = "No class stream assigned to your account yet."
+      return
+    }
     viewModelScope.launch {
       val classLearners = uiState.value.learners.filter {
         uiState.value.matchesActiveClass(it.stream, it.grade)
@@ -881,7 +976,13 @@ class TeacherViewModel(
     assessmentType: String,
     scores: Map<String, Double>,
   ) {
-    val stream = uiState.value.selectedStream.ifBlank { return }
+    val stream = uiState.value.selectedStream.ifBlank {
+      uiState.value.learners.firstOrNull()?.stream.orEmpty()
+    }
+    if (stream.isBlank()) {
+      snackbarFlow.value = "No class stream assigned to your account yet."
+      return
+    }
     val grade = uiState.value.selectedGrade
     val subjectId = KicdCurriculumRepository.subjectIdForArea(grade, learningAreaOrId)
     val areaName = KicdCurriculumRepository.areaNameForSubjectId(subjectId)
@@ -1049,11 +1150,13 @@ class TeacherViewModel(
   }
 
   fun exportBroadsheetCsv() {
-    val stream = uiState.value.selectedStream.ifBlank { return }
+    val stream = uiState.value.selectedStream.ifBlank {
+      uiState.value.learners.firstOrNull()?.stream.orEmpty()
+    }
     viewModelScope.launch {
       repository.fetchBroadsheetCsv(stream)
         .onSuccess { csv ->
-          val fileName = "Broadsheet_${stream.replace(" ", "_")}.csv"
+          val fileName = "Broadsheet_${stream.ifBlank { "Class" }.replace(" ", "_")}.csv"
           exportedCsvFlow.value = fileName to csv
         }.onFailure { err ->
           handleApiFailure(err, deniedModule = TeacherModule.BROADSHEET)
@@ -1187,7 +1290,11 @@ class TeacherViewModel(
 
   fun exportTimetablePdf(grade: String) {
     val session = uiState.value.session ?: return
-    val slots = uiState.value.timetable.filter { it.grade == grade }
+    val targetGrade = KicdCurriculumRepository.normalizeGrade(grade) ?: grade
+    val slots = uiState.value.timetable.filter {
+      val g = KicdCurriculumRepository.normalizeGrade(it.grade) ?: it.grade
+      uiState.value.matchesActiveClass(it.room, it.grade) || g.equals(targetGrade, ignoreCase = true)
+    }
     viewModelScope.launch {
       exportedPdfFlow.value = withContext(Dispatchers.IO) {
         pdfExportManager.exportTimetable(session.schoolName, grade, session.currentTerm, session.currentYear, slots)

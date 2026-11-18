@@ -7,7 +7,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,10 +32,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
-import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.School
@@ -45,7 +41,6 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -74,7 +69,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import com.example.domain.model.TeacherSession
 import com.example.ui.components.ruledNotebookBackground
 import com.example.ui.theme.LocalElimuColors
 
@@ -82,14 +76,12 @@ import com.example.ui.theme.LocalElimuColors
 fun LoginScreen(
   isLoggingIn: Boolean,
   loginError: String?,
-  onBackendLogin: (backendUrl: String, username: String, password: String) -> Unit,
+  onLogin: (username: String, password: String) -> Unit,
   onClearError: () -> Unit = {},
 ) {
   val extra = LocalElimuColors.current
   val focusManager = LocalFocusManager.current
 
-  var backendUrl by remember { mutableStateOf(TeacherSession.DEFAULT_BACKEND_URL) }
-  var showServerSettings by remember { mutableStateOf(false) }
   var username by remember { mutableStateOf("") }
   var password by remember { mutableStateOf("") }
   var showPassword by remember { mutableStateOf(false) }
@@ -97,7 +89,7 @@ fun LoginScreen(
   val submitLogin = {
     focusManager.clearFocus()
     if (!isLoggingIn) {
-      onBackendLogin(backendUrl, username, password)
+      onLogin(username, password)
     }
   }
 
@@ -386,54 +378,6 @@ fun LoginScreen(
               Spacer(Modifier.width(8.dp))
               Text("Sign In", fontWeight = FontWeight.Bold)
             }
-          }
-
-          HorizontalDivider(color = extra.line)
-
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .defaultMinSize(minHeight = 48.dp)
-              .clip(RoundedCornerShape(10.dp))
-              .clickable { showServerSettings = !showServerSettings }
-              .padding(horizontal = 6.dp, vertical = 10.dp)
-              .testTag("login_server_toggle"),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              Icon(Icons.Filled.CloudSync, contentDescription = null, tint = extra.muted, modifier = Modifier.size(16.dp))
-              Text(
-                text = "School server URL",
-                style = MaterialTheme.typography.labelMedium,
-                color = extra.muted,
-              )
-            }
-            Icon(
-              imageVector = if (showServerSettings) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-              contentDescription = "Toggle server URL settings",
-              tint = extra.muted,
-            )
-          }
-
-          AnimatedVisibility(visible = showServerSettings) {
-            OutlinedTextField(
-              value = backendUrl,
-              onValueChange = { backendUrl = it },
-              label = { Text("Backend API URL") },
-              leadingIcon = { Icon(Icons.Filled.CloudSync, contentDescription = null) },
-              singleLine = true,
-              colors = darkFieldColors,
-              shape = RoundedCornerShape(12.dp),
-              keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Uri,
-                imeAction = ImeAction.Done,
-              ),
-              keyboardActions = KeyboardActions(onDone = { submitLogin() }),
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("login_backend_url_input"),
-            )
           }
         }
       }

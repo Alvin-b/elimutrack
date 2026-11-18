@@ -73,7 +73,7 @@ abstract class ElimuTrackDatabase : RoomDatabase() {
     /** Keeps each scheme tied to its class and caches the school's plan template. */
     private val MIGRATION_3_4 = object : Migration(3, 4) {
       override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE schemes_of_work ADD COLUMN stream TEXT NOT NULL DEFAULT ''")
+        addColumnIfMissing(db, "schemes_of_work", "stream", "TEXT NOT NULL DEFAULT ''")
         db.execSQL(
           "CREATE TABLE IF NOT EXISTS lesson_plan_templates (" +
             "id INTEGER NOT NULL PRIMARY KEY, " +
@@ -81,14 +81,36 @@ abstract class ElimuTrackDatabase : RoomDatabase() {
             "sectionsJson TEXT NOT NULL, " +
             "updatedAt INTEGER NOT NULL)"
         )
+        // The upstream version 3 schema already had some plan/record links,
+        // so only add the columns that are genuinely missing.
+        addColumnIfMissing(db, "lesson_plans", "remoteId", "TEXT NOT NULL DEFAULT ''")
+        addColumnIfMissing(db, "lesson_plans", "schemeId", "TEXT NOT NULL DEFAULT ''")
+        addColumnIfMissing(db, "lesson_plans", "schemeLocalId", "TEXT NOT NULL DEFAULT ''")
+        addColumnIfMissing(db, "records_of_work", "remoteId", "TEXT NOT NULL DEFAULT ''")
+        addColumnIfMissing(db, "records_of_work", "schemeLocalId", "TEXT NOT NULL DEFAULT ''")
+        addColumnIfMissing(db, "records_of_work", "lessonPlanLocalId", "TEXT NOT NULL DEFAULT ''")
       }
     }
 
     /** Preserves answers for school-defined lesson-plan sections. */
     private val MIGRATION_4_5 = object : Migration(4, 5) {
       override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE lesson_plans ADD COLUMN extraContentJson TEXT NOT NULL DEFAULT ''")
+        addColumnIfMissing(db, "lesson_plans", "extraContentJson", "TEXT NOT NULL DEFAULT ''")
       }
+    }
+
+    private fun addColumnIfMissing(
+      db: SupportSQLiteDatabase,
+      table: String,
+      column: String,
+      definition: String,
+    ) {
+      val present = db.query("PRAGMA table_info(`$table`)").use { cursor ->
+        val nameIndex = cursor.getColumnIndex("name")
+        generateSequence { if (cursor.moveToNext()) cursor.getString(nameIndex) else null }
+          .any { it.equals(column, ignoreCase = true) }
+      }
+      if (!present) db.execSQL("ALTER TABLE `$table` ADD COLUMN `$column` $definition")
     }
   }
 }
