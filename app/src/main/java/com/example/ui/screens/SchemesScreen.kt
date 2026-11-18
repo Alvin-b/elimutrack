@@ -65,6 +65,7 @@ fun SchemesScreen(
   onExportPdf: (SchemeOfWork) -> Unit,
   onPlanLessonRow: (topic: String, outcomes: String) -> Unit,
   onClearKicdPrefill: () -> Unit,
+  onShowMessage: (String) -> Unit,
   onBackToServices: () -> Unit,
 ) {
   val extra = LocalElimuColors.current
@@ -239,6 +240,15 @@ fun SchemesScreen(
       HighlighterButton(
         text = "Save scheme",
         onClick = {
+          if (learningArea.isBlank()) {
+            onShowMessage("Select or enter a learning area.")
+            return@HighlighterButton
+          }
+          val invalidRow = rows.firstOrNull { it.subStrand.isBlank() || it.specificOutcomes.isBlank() }
+          if (invalidRow != null) {
+            onShowMessage("Week ${invalidRow.week} needs both Sub-Strand and Specific Learning Outcomes.")
+            return@HighlighterButton
+          }
           onSaveScheme(editingScheme?.id, title, state.selectedGrade, learningArea, term, yearText.toIntOrNull() ?: 2026, rows)
           isCreating = false
           editingScheme = null
@@ -304,14 +314,19 @@ fun SchemesScreen(
       }
     },
   ) { innerPadding ->
-    val saved = state.schemes.filter {
-      it.grade == state.selectedGrade &&
-        (KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, it.learningArea) == selectedSubjectId ||
-          it.learningArea.equals(selectedAreaName, ignoreCase = true))
-    }.ifEmpty { state.schemes.filter { it.grade == state.selectedGrade } }
+    val targetGrade = KicdCurriculumRepository.normalizeGrade(state.selectedGrade) ?: state.selectedGrade
+    val schemesForGrade = state.schemes.filter {
+      val g = KicdCurriculumRepository.normalizeGrade(it.grade) ?: it.grade
+      g.equals(targetGrade, ignoreCase = true)
+    }.ifEmpty { state.schemes }
+    val saved = schemesForGrade.filter {
+      KicdCurriculumRepository.subjectIdForArea(state.selectedGrade, it.learningArea) == selectedSubjectId ||
+        it.learningArea.equals(selectedAreaName, ignoreCase = true)
+    }.ifEmpty { schemesForGrade }
 
-    val sampleRows = KicdCurriculumRepository.kicdDesigns.filter { it.grade == state.selectedGrade }
-      .ifEmpty { KicdCurriculumRepository.kicdDesigns.take(3) }
+    val sampleRows = KicdCurriculumRepository.kicdDesigns.filter {
+      (KicdCurriculumRepository.normalizeGrade(it.grade) ?: it.grade).equals(targetGrade, ignoreCase = true)
+    }.ifEmpty { KicdCurriculumRepository.kicdDesigns.take(3) }
 
     LazyColumn(
       modifier = Modifier.fillMaxSize().padding(innerPadding),

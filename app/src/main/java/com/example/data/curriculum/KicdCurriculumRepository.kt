@@ -127,18 +127,27 @@ object KicdCurriculumRepository {
     (primarySubjects + jssSubjects).firstOrNull { it.id.equals(subjectId.trim(), ignoreCase = true) }?.name
       ?: subjectId
 
-  fun extractGradeFromStream(streamName: String): String {
-    val ppMatch = Regex("\\b(PP\\s*[12])\\b", RegexOption.IGNORE_CASE).find(streamName)
-    if (ppMatch != null) return ppMatch.groupValues[1].uppercase().replace(" ", "")
-    val match = Regex("Grade\\s*(\\d+)", RegexOption.IGNORE_CASE).find(streamName)
+  fun normalizeGrade(raw: String): String? {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return null
+    val ppMatch = Regex("\\b(PP\\s*[12])\\b", RegexOption.IGNORE_CASE).find(trimmed)
+    if (ppMatch != null) return ppMatch.groupValues[1].uppercase().replace(Regex("\\s+"), "")
+    val match = Regex("(?:Grade|Gr|G|Std)\\s*(\\d+)", RegexOption.IGNORE_CASE).find(trimmed)
     if (match != null) return "Grade ${match.groupValues[1]}"
-    val digitMatch = Regex("\\b(10|[1-9])\\b").find(streamName)
+    val exactDigit = Regex("^\\s*(1[0-2]|[1-9])\\s*$").find(trimmed)
+    if (exactDigit != null) return "Grade ${exactDigit.groupValues[1]}"
+    val digitMatch = Regex("\\b(1[0-2]|[1-9])\\b").find(trimmed)
     if (digitMatch != null) return "Grade ${digitMatch.groupValues[1]}"
-    return cbcGrades.firstOrNull { streamName.contains(it, ignoreCase = true) } ?: "Grade 7"
+    return cbcGrades.firstOrNull { trimmed.contains(it, ignoreCase = true) }
   }
 
-  fun levelForGrade(grade: String): String = when (grade) {
-    "Grade 1", "Grade 2", "Grade 3" -> "Lower Primary"
+  fun extractGradeOrNull(streamName: String): String? = normalizeGrade(streamName)
+
+  fun extractGradeFromStream(streamName: String): String =
+    normalizeGrade(streamName) ?: "Grade 7"
+
+  fun levelForGrade(grade: String): String = when (normalizeGrade(grade) ?: grade) {
+    "PP1", "PP2", "Grade 1", "Grade 2", "Grade 3" -> "Lower Primary"
     "Grade 4", "Grade 5", "Grade 6" -> "Upper Primary"
     else -> "Junior School"
   }

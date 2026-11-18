@@ -9,16 +9,19 @@ import com.example.data.local.SessionPreferences
 import com.example.data.remote.BackendApiParser
 import com.example.data.remote.NetworkModule
 import com.example.data.repository.TeacherRepository
+import com.example.domain.model.AllocatedClass
 import com.example.domain.model.AttendanceRecord
 import com.example.domain.model.AttendanceStatus
 import com.example.domain.model.CbcPerformanceLevel
 import com.example.domain.model.Learner
 import com.example.domain.model.LessonPlan
 import com.example.domain.model.MarkEntry
+import com.example.domain.model.RecordOfWork
 import com.example.domain.model.SchemeOfWork
 import com.example.domain.model.SchemeRow
 import com.example.domain.model.TeacherModule
 import com.example.domain.model.TeacherSession
+import com.example.ui.viewmodel.TeacherUiState
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -308,8 +311,149 @@ class ExampleRobolectricTest {
       repo.resetTimetableForGrade("Grade 4")
       val resetG4 = repo.timetableFlow.first().first { it.id == originalG4.id }
       assertEquals(originalG4.learningArea, resetG4.learningArea)
+
+      repo.saveLessonPlan(
+        LessonPlan(
+          id = "lp_extra",
+          schoolName = "Fret's School",
+          teacherName = "Alvina",
+          grade = "Grade 4",
+          stream = "Grade 4 East",
+          learningArea = "Mathematics",
+          term = "Term 1",
+          week = 2,
+          lessonNumber = 3,
+          date = "2026-03-01",
+          timeSlot = "8:20 - 9:00",
+          rollCount = 30,
+          strand = "Numbers",
+          subStrand = "Fractions",
+          topic = "Fractions",
+          specificOutcomes = "Identify halves",
+          keyInquiryQuestions = "What is half?",
+          coreCompetencies = "Critical Thinking",
+          values = "Unity",
+          pcis = "Life skills",
+          learningResources = "Paper strips",
+          introduction = "Fold paper",
+          lessonDevelopment = "Compare halves",
+          conclusion = "Recap",
+          extendedActivity = "Home task",
+          reflection = "Clear",
+          updatedAt = System.currentTimeMillis(),
+          extraContent = mapOf("sec1" to "Identify halves", "customSection" to "Extra template note"),
+        )
+      )
+      val savedPlan = repo.lessonPlansFlow.first().first { it.id == "lp_extra" }
+      assertEquals("Extra template note", savedPlan.extraContent["customSection"])
+
+      repo.saveRecordOfWork(
+        RecordOfWork(
+          id = "row_roundtrip",
+          schoolName = "Fret's School",
+          teacherName = "Alvina",
+          grade = "Grade 4",
+          stream = "Grade 4 East",
+          learningArea = "Mathematics",
+          term = "Term 1",
+          year = 2026,
+          week = 2,
+          date = "2026-03-02",
+          strand = "Numbers",
+          subStrand = "Fractions",
+          workCovered = "Covered halves and quarters",
+          absencesToday = "1",
+          homework = "Page 14",
+          challengesRemarks = "Good participation",
+          teacherInitials = "AN",
+          updatedAt = System.currentTimeMillis(),
+          topic = "Equivalent Fractions",
+          lessonNumber = 4,
+          classSize = 31,
+        )
+      )
+      val savedRow = repo.recordsOfWorkFlow.first().first { it.id == "row_roundtrip" }
+      assertEquals("Equivalent Fractions", savedRow.topic)
+      assertEquals(4, savedRow.lessonNumber)
+      assertEquals(31, savedRow.classSize)
     } finally {
       db.close()
     }
+  }
+
+  @Test
+  fun `module aliases, nested object permissions, numeric grades, and class matching handle server shapes`() {
+    assertEquals(TeacherModule.SCHEMES, TeacherModule.fromKey("schemes_of_work"))
+    assertEquals(TeacherModule.SCHEMES, TeacherModule.fromKey("schemesOfWork"))
+    assertEquals(TeacherModule.RECORD_OF_WORK, TeacherModule.fromKey("record_of_work"))
+    assertEquals(TeacherModule.RECORD_OF_WORK, TeacherModule.fromKey("recordOfWork"))
+    assertEquals(TeacherModule.PROGRESS, TeacherModule.fromKey("learner_progress"))
+    assertEquals(TeacherModule.LESSON_PLANS, TeacherModule.fromKey("lesson_plans"))
+
+    val nestedSessionJson = """
+      {
+        "token": "tok_nested",
+        "staff": {
+          "id": "stf_2",
+          "name": "David Otieno",
+          "username": "david",
+          "services": {
+            "schemes": true,
+            "lessonPlans": true,
+            "recordOfWork": true,
+            "timetable": true,
+            "learners": true,
+            "whatsapp": false
+          },
+          "streams": ["4 - East", "Grade 7"]
+        }
+      }
+    """.trimIndent()
+    val parsedSession = BackendApiParser.parseSession(nestedSessionJson, "", TeacherSession.DEFAULT_BACKEND_URL)
+    assertTrue(TeacherModule.SCHEMES in parsedSession.allowedModules)
+    assertTrue(TeacherModule.LESSON_PLANS in parsedSession.allowedModules)
+    assertTrue(TeacherModule.RECORD_OF_WORK in parsedSession.allowedModules)
+    assertTrue(TeacherModule.TIMETABLE in parsedSession.allowedModules)
+    assertTrue(TeacherModule.LEARNERS in parsedSession.allowedModules)
+    assertFalse(TeacherModule.WHATSAPP in parsedSession.allowedModules)
+    assertEquals("Grade 4", parsedSession.allocatedClasses.first().grade)
+
+    val learnersRaw = """
+      {
+        "learners": [
+          { "id": "l_e", "name": "Faith Akinyi", "admissionNo": "A-10", "stream": "East", "gradeLevel": "4" }
+        ]
+      }
+    """.trimIndent()
+    val parsedLearners = BackendApiParser.parseLearners(learnersRaw, "")
+    assertEquals(1, parsedLearners.size)
+    assertEquals("Grade 4", parsedLearners.first().grade)
+    assertEquals("East", parsedLearners.first().stream)
+
+    val stateWithSuffix = TeacherUiState(
+      session = TeacherSession(
+        teacherId = "t2",
+        fullName = "Alvina",
+        email = "a@s.ke",
+        tscNumber = "T-1",
+        schoolName = "School",
+        allocatedClasses = listOf(AllocatedClass("Grade 7 Eta", "Grade 7", "Eta", emptyList())),
+      ),
+      selectedStream = "Grade 7 Eta",
+      selectedGrade = "Grade 7",
+    )
+    assertTrue(stateWithSuffix.matchesActiveClass("Grade 7 - Eta", "Grade 7"))
+    assertTrue(stateWithSuffix.matchesActiveClass("Eta", "7"))
+    assertFalse(stateWithSuffix.matchesActiveClass("Grade 7 North", "Grade 7"))
+
+    val stateGradeOnly = stateWithSuffix.copy(
+      session = stateWithSuffix.session!!.copy(
+        allocatedClasses = listOf(AllocatedClass("Grade 7", "Grade 7", "", emptyList())),
+      ),
+      selectedStream = "Grade 7",
+      selectedGrade = "Grade 7",
+    )
+    assertTrue(stateGradeOnly.matchesActiveClass("Eta", "Grade 7"))
+    assertTrue(stateGradeOnly.matchesActiveClass("", "7"))
   }
 }

@@ -18,7 +18,7 @@ import androidx.room.RoomDatabase
     GuardianMessageEntity::class,
     TimetableSlotEntity::class,
   ],
-  version = 2,
+  version = 3,
   exportSchema = false,
 )
 abstract class ElimuTrackDatabase : RoomDatabase() {

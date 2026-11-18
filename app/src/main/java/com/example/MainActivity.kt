@@ -155,7 +155,7 @@ fun ElimuTrackRoot(
     LoginScreen(
       isLoggingIn = state.isLoggingIn,
       loginError = state.loginError,
-      onBackendLogin = viewModel::loginWithBackend,
+      onLogin = viewModel::login,
       onClearError = viewModel::clearLoginError,
     )
     return
@@ -269,6 +269,7 @@ fun ElimuTrackRoot(
                 openedFromServices = false
                 viewModel.navigateToModule(TeacherModule.ATTENDANCE)
               },
+              onOpenServices = viewModel::openServices,
               onRefresh = { viewModel.refreshActiveStream(showToast = true) },
             )
 
@@ -278,13 +279,13 @@ fun ElimuTrackRoot(
                 openedFromServices = true
                 viewModel.navigateToModule(mod)
               },
+              onRefreshPermissions = { viewModel.refreshActiveStream(showToast = true) },
             )
 
             AppDestination.ME -> MeScreen(
               state = state,
               onToggleDarkMode = viewModel::toggleDarkMode,
               onChangeLogin = viewModel::changeLogin,
-              onSaveServerUrl = viewModel::saveServerUrl,
               onSyncNow = viewModel::syncNow,
               onLogout = viewModel::logout,
             )
@@ -346,7 +347,7 @@ fun ElimuTrackRoot(
       title = { Text("Broadsheet CSV Ready", fontWeight = FontWeight.Bold) },
       text = {
         Text(
-          "$fileName ($lineCount rows) downloaded from your school server. Choose where to save the spreadsheet.",
+          "$fileName ($lineCount rows) is ready. Choose where to save the spreadsheet.",
           style = MaterialTheme.typography.bodyMedium,
         )
       },
@@ -388,6 +389,7 @@ private fun ModuleRouter(
         viewModel.selectStream(streamKey)
         viewModel.navigateToModule(TeacherModule.ATTENDANCE)
       },
+      onOpenServices = viewModel::openServices,
       onRefresh = { viewModel.refreshActiveStream(showToast = true) },
     )
     TeacherModule.TIMETABLE -> TimetableScreen(
@@ -404,6 +406,7 @@ private fun ModuleRouter(
       onExportPdf = viewModel::exportSchemePdf,
       onPlanLessonRow = viewModel::planFromSchemeRow,
       onClearKicdPrefill = viewModel::clearPendingKicdPrefill,
+      onShowMessage = viewModel::showMessage,
       onBackToServices = onBackToServices,
     )
     TeacherModule.LESSON_PLANS -> LessonPlansScreen(
@@ -413,6 +416,7 @@ private fun ModuleRouter(
       onExportPdf = viewModel::exportLessonPlanPdf,
       onClearKicdPrefill = viewModel::clearPendingKicdPrefill,
       onClearPlanPrefill = viewModel::clearPendingPlanPrefill,
+      onShowMessage = viewModel::showMessage,
       onBackToServices = onBackToServices,
     )
     TeacherModule.RECORD_OF_WORK -> RecordsOfWorkScreen(
@@ -420,6 +424,7 @@ private fun ModuleRouter(
       onSaveRecord = viewModel::saveRecordOfWork,
       onDeleteRecord = viewModel::deleteRecordOfWork,
       onExportPdf = viewModel::exportRecordsPdf,
+      onShowMessage = viewModel::showMessage,
       onBackToServices = onBackToServices,
     )
     TeacherModule.ATTENDANCE -> AttendanceScreen(

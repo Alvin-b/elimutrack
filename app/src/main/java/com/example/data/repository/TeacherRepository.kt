@@ -73,6 +73,8 @@ class TeacherRepository(
   private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
   private val rowListType = Types.newParameterizedType(List::class.java, SchemeRow::class.java)
   private val rowsAdapter = moshi.adapter<List<SchemeRow>>(rowListType)
+  private val contentMapType = Types.newParameterizedType(Map::class.java, String::class.java, String::class.java)
+  private val contentMapAdapter = moshi.adapter<Map<String, String>>(contentMapType)
 
   val sessionFlow: Flow<TeacherSession?> = prefs.sessionFlow
   val darkModeFlow: Flow<Boolean> = prefs.darkModeFlow
@@ -250,16 +252,34 @@ class TeacherRepository(
   suspend fun fetchDashboard(stream: String): Result<DashboardSummary> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getDashboard(stream))
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getDashboard(queryStream))
     BackendApiParser.parseDashboard(raw, stream)
   }
 
   suspend fun fetchLearners(stream: String): Result<List<Learner>> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getLearners(stream))
-    val learners = BackendApiParser.parseLearners(raw, stream)
-    db.learnerDao().deleteForStream(stream)
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getLearners(queryStream))
+    var learners = BackendApiParser.parseLearners(raw, stream)
+    if (learners.isEmpty() && queryStream != null) {
+      val fallbackRaw = runCatching { BackendApiParser.unwrapOrThrow(api.getLearners(null)) }.getOrNull()
+      if (!fallbackRaw.isNullOrBlank()) {
+        val allTeacherLearners = BackendApiParser.parseLearners(fallbackRaw, stream)
+        if (allTeacherLearners.isNotEmpty()) {
+          learners = allTeacherLearners
+          db.learnerDao().deleteAll()
+          db.learnerDao().upsertAll(learners.map { it.toEntity() })
+          return@runCatching learners
+        }
+      }
+    }
+    if (queryStream != null) {
+      db.learnerDao().deleteForStream(stream)
+    } else {
+      db.learnerDao().deleteAll()
+    }
     if (learners.isNotEmpty()) {
       db.learnerDao().upsertAll(learners.map { it.toEntity() })
     }
@@ -269,7 +289,8 @@ class TeacherRepository(
   suspend fun fetchAttendance(stream: String, day: String): Result<List<AttendanceRecord>> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getAttendance(stream, day))
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getAttendance(queryStream, day))
     val parsed = BackendApiParser.parseAttendance(raw, stream, day)
     val learnersById = db.learnerDao().observeAll().first().associateBy { it.id }
     val enriched = parsed.map { rec ->
@@ -286,14 +307,19 @@ class TeacherRepository(
   suspend fun fetchMarks(stream: String): Result<List<MarkEntry>> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getMarks(stream))
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getMarks(queryStream))
     val parsed = BackendApiParser.parseMarks(raw, stream, session.currentTerm)
     val learnersById = db.learnerDao().observeAll().first().associateBy { it.id }
     val enriched = parsed.map { m ->
       val lrn = learnersById[m.learnerId]
       if (lrn != null) m.copy(learnerName = lrn.fullName, admissionNo = lrn.admissionNo) else m
     }
-    db.markEntryDao().deleteForStream(stream)
+    if (queryStream != null) {
+      db.markEntryDao().deleteForStream(stream)
+    } else {
+      db.markEntryDao().deleteAll()
+    }
     if (enriched.isNotEmpty()) {
       db.markEntryDao().upsertAll(enriched.map { it.toEntity() })
     }
@@ -303,7 +329,8 @@ class TeacherRepository(
   suspend fun fetchObservations(stream: String, day: String? = null): Result<List<ObservationNote>> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getObservations(stream, day))
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getObservations(queryStream, day))
     val parsed = BackendApiParser.parseObservations(raw, stream, day ?: todayIso())
     val learnersById = db.learnerDao().observeAll().first().associateBy { it.id }
     val enriched = parsed.map { obs ->
@@ -322,7 +349,8 @@ class TeacherRepository(
   suspend fun fetchSchemes(stream: String, subjectId: String? = null, term: String? = null): Result<List<SchemeOfWork>> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getSchemes(stream, subjectId, term))
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getSchemes(queryStream, subjectId, term))
     val parsed = BackendApiParser.parseSchemes(raw, stream, session.schoolName, session.fullName, term ?: session.currentTerm)
     if (subjectId == null && term == null) {
       db.schemeDao().deleteAll()
@@ -348,7 +376,8 @@ class TeacherRepository(
   suspend fun fetchRecordWork(stream: String): Result<List<RecordOfWork>> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getRecordWork(stream))
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getRecordWork(queryStream))
     val parsed = BackendApiParser.parseRecordWork(raw, stream, session.schoolName, session.fullName, session.currentTerm)
     db.recordOfWorkDao().deleteAll()
     if (parsed.isNotEmpty()) {
@@ -360,7 +389,8 @@ class TeacherRepository(
   suspend fun fetchProgress(stream: String): Result<List<LearnerProgressEntry>> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getProgress(stream))
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getProgress(queryStream))
     val parsed = BackendApiParser.parseProgress(raw, stream)
     db.learnerProgressDao().deleteAll()
     if (parsed.isNotEmpty()) {
@@ -402,7 +432,8 @@ class TeacherRepository(
   suspend fun fetchPayments(stream: String): Result<List<FeePaymentRecord>> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    val raw = BackendApiParser.unwrapOrThrow(api.getPayments(stream))
+    val queryStream = stream.trim().ifBlank { null }
+    val raw = BackendApiParser.unwrapOrThrow(api.getPayments(queryStream))
     BackendApiParser.parsePayments(raw)
   }
 
@@ -420,7 +451,7 @@ class TeacherRepository(
   suspend fun fetchBroadsheetCsv(stream: String): Result<String> = runCatching {
     val session = prefs.sessionFlow.first() ?: throw IllegalStateException("No active session")
     val api = apiFor(session)
-    BackendApiParser.unwrapOrThrow(api.getBroadsheetCsv(stream))
+    BackendApiParser.unwrapOrThrow(api.getBroadsheetCsv(stream.trim().ifBlank { null }))
   }
 
   /**
@@ -437,18 +468,13 @@ class TeacherRepository(
       return@runCatching null
     }
     val allowed = session.allowedModules
-    val needsRoster = TeacherModule.LEARNERS in allowed ||
-      TeacherModule.ATTENDANCE in allowed ||
-      TeacherModule.MARKSBOOK in allowed ||
-      TeacherModule.OBSERVATIONS in allowed ||
-      TeacherModule.PROGRESS in allowed ||
-      TeacherModule.REPORT_CARDS in allowed ||
-      TeacherModule.BROADSHEET in allowed ||
-      TeacherModule.FEE_PAYMENTS in allowed ||
-      TeacherModule.WHATSAPP in allowed
+    val needsRoster = allowed.any { it in TeacherModule.rosterDependentModules }
 
     if (needsRoster) {
-      fetchLearners(stream).handleModuleError(TeacherModule.LEARNERS)
+      val rosterRes = fetchLearners(stream)
+      if (TeacherModule.LEARNERS in allowed) {
+        rosterRes.handleModuleError(TeacherModule.LEARNERS)
+      }
     }
 
     val summary = if (TeacherModule.DASHBOARD in allowed) {
@@ -879,26 +905,32 @@ class TeacherRepository(
   private fun SchemeOfWork.toEntity(): SchemeEntity =
     SchemeEntity(id, title, schoolName, teacherName, grade, learningArea, term, year, rowsAdapter.toJson(rows), updatedAt, synced)
 
-  private fun LessonPlanEntity.toDomain(): LessonPlan = LessonPlan(
-    id, schoolName, teacherName, grade, stream, learningArea, term, week, lessonNumber, date, timeSlot, rollCount,
-    strand, subStrand, topic, specificOutcomes, keyInquiryQuestions, coreCompetencies, valuesText, pcis,
-    learningResources, organizationOfLearning, introduction, lessonDevelopment, conclusion, extendedActivity, reflection, updatedAt, synced,
-  )
+  private fun LessonPlanEntity.toDomain(): LessonPlan {
+    val extra = runCatching { contentMapAdapter.fromJson(extraContentJson) }.getOrNull().orEmpty()
+    return LessonPlan(
+      id, schoolName, teacherName, grade, stream, learningArea, term, week, lessonNumber, date, timeSlot, rollCount,
+      strand, subStrand, topic, specificOutcomes, keyInquiryQuestions, coreCompetencies, valuesText, pcis,
+      learningResources, organizationOfLearning, introduction, lessonDevelopment, conclusion, extendedActivity, reflection, updatedAt, synced, extra,
+    )
+  }
 
   private fun LessonPlan.toEntity(): LessonPlanEntity = LessonPlanEntity(
     id, schoolName, teacherName, grade, stream, learningArea, term, week, lessonNumber, date, timeSlot, rollCount,
     strand, subStrand, topic, specificOutcomes, keyInquiryQuestions, coreCompetencies, values, pcis,
     learningResources, organizationOfLearning, introduction, lessonDevelopment, conclusion, extendedActivity, reflection, updatedAt, synced,
+    runCatching { contentMapAdapter.toJson(extraContent) }.getOrDefault("{}"),
   )
 
   private fun RecordOfWorkEntity.toDomain(): RecordOfWork = RecordOfWork(
     id, schoolName, teacherName, grade, stream, learningArea, term, year, week, date, strand, subStrand,
     workCovered, absencesToday, homework, challengesRemarks, teacherInitials, updatedAt, synced,
+    topic, lessonNumber, classSize, schemeId, lessonPlanId,
   )
 
   private fun RecordOfWork.toEntity(): RecordOfWorkEntity = RecordOfWorkEntity(
     id, schoolName, teacherName, grade, stream, learningArea, term, year, week, date, strand, subStrand,
     workCovered, absencesToday, homework, challengesRemarks, teacherInitials, updatedAt, synced,
+    topic, lessonNumber, classSize, schemeId, lessonPlanId,
   )
 
   private fun LearnerEntity.toDomain(): Learner = Learner(

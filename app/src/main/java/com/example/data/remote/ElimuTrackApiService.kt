@@ -26,7 +26,7 @@ interface ElimuTrackApiService {
 
   // Dashboard & Learners
   @GET("dashboard")
-  suspend fun getDashboard(@Query("stream") stream: String): Response<ResponseBody>
+  suspend fun getDashboard(@Query("stream") stream: String? = null): Response<ResponseBody>
 
   @GET("learners")
   suspend fun getLearners(@Query("stream") stream: String? = null): Response<ResponseBody>
@@ -37,7 +37,7 @@ interface ElimuTrackApiService {
   // Marks
   @GET("marks")
   suspend fun getMarks(
-    @Query("stream") stream: String,
+    @Query("stream") stream: String? = null,
     @Query("learner") learnerId: String? = null,
   ): Response<ResponseBody>
 
@@ -47,7 +47,7 @@ interface ElimuTrackApiService {
   // Attendance (Register)
   @GET("attendance")
   suspend fun getAttendance(
-    @Query("stream") stream: String,
+    @Query("stream") stream: String? = null,
     @Query("day") day: String? = null,
   ): Response<ResponseBody>
 
@@ -57,7 +57,7 @@ interface ElimuTrackApiService {
   // Observations
   @GET("observations")
   suspend fun getObservations(
-    @Query("stream") stream: String,
+    @Query("stream") stream: String? = null,
     @Query("day") day: String? = null,
   ): Response<ResponseBody>
 
@@ -99,7 +99,7 @@ interface ElimuTrackApiService {
 
   // Record of Work
   @GET("recordwork")
-  suspend fun getRecordWork(@Query("stream") stream: String): Response<ResponseBody>
+  suspend fun getRecordWork(@Query("stream") stream: String? = null): Response<ResponseBody>
 
   @POST("recordwork")
   suspend fun createRecordWork(@Body request: RecordWorkApiDto): Response<ResponseBody>
@@ -113,7 +113,7 @@ interface ElimuTrackApiService {
   // Learner Progress
   @GET("progress")
   suspend fun getProgress(
-    @Query("stream") stream: String,
+    @Query("stream") stream: String? = null,
     @Query("learner") learnerId: String? = null,
   ): Response<ResponseBody>
 
@@ -142,7 +142,7 @@ interface ElimuTrackApiService {
 
   // Payments
   @GET("payments")
-  suspend fun getPayments(@Query("stream") stream: String): Response<ResponseBody>
+  suspend fun getPayments(@Query("stream") stream: String? = null): Response<ResponseBody>
 
   @POST("payments")
   suspend fun createPayment(@Body request: PaymentPostRequestDto): Response<ResponseBody>
@@ -156,5 +156,5 @@ interface ElimuTrackApiService {
 
   // Broadsheet CSV
   @GET("broadsheet/csv")
-  suspend fun getBroadsheetCsv(@Query("stream") stream: String): Response<ResponseBody>
+  suspend fun getBroadsheetCsv(@Query("stream") stream: String? = null): Response<ResponseBody>
 }
